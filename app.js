@@ -1,6 +1,8 @@
 /* Entrevero Futsal Clube – app */
 'use strict';
 
+// estilos que vieram dentro do <body> vão para o <head> (o app redesenha o body)
+document.querySelectorAll('body style, body link[rel=stylesheet], body link[rel=preconnect], body title').forEach(n => document.head.appendChild(n));
 const API = (window.EFC_API || '').trim();
 const DEMO = !API;
 const $ = (s, el = document) => el.querySelector(s);
@@ -20,7 +22,7 @@ const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0
 const hoje = () => iso(new Date());
 
 const st = {
-  token: localStorage.getItem(DEMO ? 'efc_token_demo' : 'efc_token') || '', user: null, d: null, fotos: {},
+  token: (() => { try { return localStorage.getItem(DEMO ? 'efc_token_demo' : 'efc_token') || ''; } catch (e) { return ''; } })(), user: null, d: null, fotos: {},
   tab: 'inicio', jogoId: null, jogoTab: 'lista', tabTab: 'pontos', granaTab: 'caixa', eventoId: null,
   rascunho: null, midiaLocal: {}, jogadorId: null
 };
@@ -46,10 +48,31 @@ async function demoInit() {
     withLock: fn => fn()
   });
 }
-async function api(action, p = {}) {
+/* escudo pulsando enquanto o app "pensa" */
+const PENS = { n: 0, timer: null };
+function pensar(liga) {
+  PENS.n = Math.max(0, PENS.n + (liga ? 1 : -1));
+  if (PENS.n > 0 && !PENS.timer && !document.querySelector('.pensando')) {
+    PENS.timer = setTimeout(() => {
+      PENS.timer = null; if (PENS.n === 0 || document.querySelector('.pensando') || document.querySelector('.carregando')) return;
+      const d = document.createElement('div'); d.className = 'pensando'; d.innerHTML = '<img src="icons/escudo.png" alt="Carregando">';
+      document.body.appendChild(d);
+    }, 180);
+  }
+  if (PENS.n === 0) { clearTimeout(PENS.timer); PENS.timer = null; const d = document.querySelector('.pensando'); if (d) { d.classList.add('sai'); setTimeout(() => d.remove(), 160); } }
+}
+const telaCarregando = () => '<div class="carregando"><img src="icons/escudo.png" alt="Carregando"><span>Carregando...</span></div>';
+const SILENCIOSAS = ['fotos', 'assinar', 'avisos'];
+async function api(action, p = {}, silencioso) {
+  const mostra = !silencioso && !SILENCIOSAS.includes(action);
+  if (mostra) pensar(true);
+  try { return await chamar(action, p); } finally { if (mostra) pensar(false); }
+}
+async function chamar(action, p) {
   const req = Object.assign({ action, token: st.token }, p);
   if (DEMO) {
     if (!server) await demoInit();
+    await new Promise(r => setTimeout(r, 380)); // simula o tempo do servidor
     try { return JSON.parse(JSON.stringify(server.handle(JSON.parse(JSON.stringify(req))) || {})); }
     catch (e) { if (action !== 'login' && /login|Sessão/i.test(e.message)) sair(true); throw e; }
   }
@@ -157,6 +180,7 @@ function matchJog(nome) {
   const j = (D().Jogadores || []).find(x => norm(x.apelido) === n || norm(x.nome) === n);
   return j ? j.id : '';
 }
+const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
 
 /* caixa */
@@ -250,11 +274,11 @@ const ICON = {
 
 function shell() {
   document.body.innerHTML = `${DEMO ? '<div class="demo">MODO DEMONSTRAÇÃO – dados salvos só neste aparelho</div>' : ''}
-  <header class="top"><img class="crest" src="icons/escudo.png" alt="">
+  <header class="top"><button class="voltar hidden" id="btnVoltar" data-act="voltar" aria-label="Voltar">‹</button><img class="crest" src="icons/escudo.png" alt="">
     <div><div class="t1">Entrevero</div><div class="t2">Futsal Clube</div></div><div class="sp"></div>
     <button class="mebox" data-act="menu"><span class="who"><b id="meNome"></b><small id="mePapel"></small></span><span class="me" id="meBtn"></span></button></header>
   <main id="main"></main>
-  <nav class="nav">${['inicio', 'jogo', 'tabela', 'indic', 'grana', 'eventos'].map(t =>
+  <nav class="nav">${['inicio', 'jogo', 'tabela', 'indic', 'grana', 'eventos'].filter(t => t !== 'grana' || admin()).map(t =>
     `<button data-act="tab" data-t="${t}" id="nav-${t}">${ICON[t]}<span>${{ inicio: 'Início', jogo: 'Jogo', tabela: 'Tabela', indic: 'Números', grana: 'Caixa', eventos: 'Eventos' }[t]}</span></button>`).join('')}</nav>`;
 }
 
@@ -264,6 +288,8 @@ function render() {
   $('#meNome').textContent = st.user.apelido; $('#mePapel').textContent = admin() ? 'Administrador' : 'Jogador';
   $('#mePapel').className = admin() ? 'adm' : '';
   $('#meBtn').innerHTML = av(st.user.id, '', st.user.apelido).replace('class="av ', 'style="width:100%;height:100%;border:0" class="av ');
+  if (st.tab === 'grana' && !admin()) st.tab = 'inicio';
+  setTimeout(atualizarVoltar, 0);
   const V = { inicio: vInicio, jogo: vJogo, tabela: vTabela, grana: vGrana, eventos: vEventos, elenco: vElenco, jogador: vJogador, galeria: vGaleria, indic: vIndic, config: vConfig }[st.tab] || vInicio;
   $('#main').innerHTML = V();
 }
@@ -272,6 +298,7 @@ function render() {
 function vInicio() {
   const j = jogoAtual(), me = st.user.id, S = stats(), s = S[me] || {};
   let h = '';
+  if (window.EFC_DEMO_GUIA && !lsGet('efc_demo_guia_ok')) h += guiaDemo();
   if (j) {
     const ins = inscritos(j.id), gk = ins.filter(i => yes(i.goleiro)).length, ln = ins.length - gk;
     const eu = ins.find(i => i.jogadorId === me);
@@ -291,13 +318,15 @@ function vInicio() {
       h += `<div class="card" style="border-color:var(--or)"><div class="row"><div class="grow"><div class="kick">Votação aberta</div>
       <b>Craque e Bola Murcha de ${fcurta(g.data)}</b></div><button class="btn pri sm" data-act="votar" data-id="${g.id}">Votar</button></div></div>`;
     });
-  // minhas pendências
-  const minhas = pendencias().filter(p => p.jogadorId === me);
-  if (minhas.length) {
-    const tot = minhas.reduce((a, p) => a + p.valor, 0);
-    h += `<div class="card"><div class="row"><div class="grow"><div class="kick" style="color:var(--red)">Você tem pendências</div>
-      <div class="big money" style="font-size:26px">${brl(tot)}</div></div><button class="btn sm" data-act="copiarPix">Copiar Pix</button></div>
-      <div class="small muted" style="margin-top:6px">${minhas.map(p => esc(rotuloPend(p))).join(' • ')}</div></div>`;
+  if ((st.notif === 'desligado' || st.notif === 'ios-instalar') && !lsGet('efc_notif_dica')) {
+    h += `<div class="card" style="border-color:var(--or)"><div class="row"><div class="grow"><div class="kick">Novo</div><b>🔔 Receba as notificações do time</b>
+      <div class="small muted">Votos, gols, lista aberta e resultado na hora.</div></div></div>
+      <div class="btns" style="margin-top:10px"><button class="btn pri sm grow" data-act="notifAbrir">Ativar</button><button class="btn ghost sm" data-act="notifDica">Agora não</button></div></div>`;
+  }
+  // minhas pendências, separadas por tipo
+  h += cardPendencias(me);
+  if ((D().Avisos || []).length) {
+    h += `<div class="sec"><h2>🔔 Últimos avisos</h2>${D().Avisos.length > 3 ? '<button class="btn sm ghost" data-act="verAvisos">Ver todos</button>' : ''}</div>${listaAvisos(3)}`;
   }
   // último resultado
   const ult = jogosOrd().filter(temResultado).pop();
@@ -305,14 +334,14 @@ function vInicio() {
     h += `<div class="sec"><h2>Último resultado</h2><span class="tiny">${fdata(ult.data)}</span></div>
     <div class="card click" data-act="verJogo" data-id="${ult.id}" data-sub="resultado"><div class="score"><span class="V">${ult.golsVermelho}</span><span class="tiny">x</span><span class="A">${ult.golsAzul}</span></div>
     <div class="row" style="justify-content:space-between;font-size:12px;font-weight:700"><span style="color:var(--red)">VERMELHO</span><span style="color:#6aa8ff">AZUL</span></div>
-    ${csv(ult.craqueIds).length ? `<div class="small" style="margin-top:8px">⭐ Craque: <b>${csv(ult.craqueIds).map(id => esc(J(id)?.apelido)).join(', ')}</b>${csv(ult.murchaIds).length ? ` &nbsp; 🎈 Bola murcha: <b>${csv(ult.murchaIds).map(id => esc(J(id)?.apelido)).join(', ')}</b>` : ''}</div>` : ''}</div>`;
+    ${csv(ult.craqueIds).length ? `<div class="small" style="margin-top:8px">⭐ Bola cheia: <b>${csv(ult.craqueIds).map(id => esc(J(id)?.apelido)).join(', ')}</b>${csv(ult.murchaIds).length ? ` &nbsp; 🎈 Bola murcha: <b>${csv(ult.murchaIds).map(id => esc(J(id)?.apelido)).join(', ')}</b>` : ''}</div>` : ''}</div>`;
   }
   // líderes
   const lid = (k, rot, fmt) => { const r = ranking(k)[0]; return r ? `<div class="stat click" data-act="tab" data-t="tabela" data-sub="${k === 'media' ? 'goleiros' : k}"><div class="k">${rot}</div>
      <div class="row" style="margin-top:6px">${av(r.id, 'sm')}<div class="grow ellip"><b>${esc(J(r.id).apelido)}</b><div class="tiny">${fmt(r)}</div></div></div></div>` : ''; };
   h += `<div class="sec"><h2>Líderes</h2><button class="btn sm ghost" data-act="tab" data-t="tabela">Tabela</button></div><div class="grid2">
     ${lid('pontos', '🏆 Pontuação', r => r.pontos + ' pts')}${lid('gols', '⚽ Artilheiro', r => r.gols + ' gols')}
-    ${lid('craques', '⭐ Craque', r => r.craques + 'x')}${lid('media', '🥅 Goleiro', r => 'média ' + r.media.toFixed(1).replace('.', ','))}</div>`;
+    ${lid('craques', '⭐ Bola cheia', r => r.craques + 'x')}${lid('media', '🥅 Goleiro', r => 'média ' + r.media.toFixed(1).replace('.', ','))}</div>`;
   // minhas estatísticas
   const pos = ranking('pontos').find(r => r.id === me);
   h += `<div class="sec"><h2>Meus números</h2></div><div class="grid2">
@@ -322,6 +351,21 @@ function vInicio() {
     <div class="stat"><div class="k">Bola murcha</div><div class="v">${s.murchas || 0}</div></div></div>
     <div class="btns" style="margin-top:16px"><button class="btn ghost grow" data-act="tab" data-t="elenco">👥 Elenco</button><button class="btn ghost grow" data-act="tab" data-t="galeria">📸 Galeria</button></div>`;
   return h;
+}
+function cardPendencias(me) {
+  const minhas = pendencias().filter(p => p.jogadorId === me);
+  if (!minhas.length) return `<div class="card row" style="padding:12px 16px"><span style="font-size:20px">💚</span><div class="grow"><b>Você está em dia</b><div class="tiny">Nenhuma pendência com o time.</div></div></div>`;
+  const tot = minhas.reduce((a, p) => a + p.valor, 0);
+  const grupos = [['jogo', '⚽ Jogos'], ['evento', '🍖 Eventos'], ['cobranca', '👕 Uniformes e outros']];
+  const linha = (t, v, sub) => `<div class="row" style="padding:7px 0;border-top:1px dashed var(--line)"><div class="grow ellip">${t}${sub ? `<div class="tiny">${sub}</div>` : ''}</div><b class="money">${brl(v)}</b></div>`;
+  return `<div class="card" style="border-color:rgba(229,72,77,.45)"><div class="row"><div class="grow"><div class="kick" style="color:var(--red)">Minhas pendências</div>
+    <div class="big money" style="font-size:28px">${brl(tot)}</div></div><button class="btn sm" data-act="copiarPix">Copiar Pix</button></div>
+    ${grupos.map(([k, rot]) => { const ps = minhas.filter(p => p.tipo === k); if (!ps.length) return '';
+      return `<div style="margin-top:12px"><div class="row small" style="font-weight:700;margin-bottom:2px"><span class="grow">${rot}</span><span class="money muted">${brl(ps.reduce((a, p) => a + p.valor, 0))}</span></div>
+        ${ps.map(p => k === 'jogo' ? linha(`Jogo de ${fdata(p.ref.data)}`, p.valor, yes(p.i.goleiro) ? 'goleiro' : '')
+          : k === 'evento' ? linha(esc(p.ref.nome), p.valor, fdata(p.ref.data))
+          : linha(esc(p.ref.item), p.valor, num(p.ref.pago) > 0 ? `já pagou ${brl(p.ref.pago)} de ${brl(p.ref.valor)}` : esc(p.ref.categoria))).join('')}</div>`; }).join('')}
+    <div class="tiny" style="margin-top:12px">Pix: <b style="user-select:all">${esc(cfg('pix'))}</b> • depois de pagar, um administrador marca como pago.</div></div>`;
 }
 function rotuloPend(p) {
   if (p.tipo === 'jogo') return `Jogo ${fcurta(p.ref.data)} ${brl(p.valor)}`;
@@ -490,9 +534,18 @@ function jResultado(j) {
   const ins = inscritos(j.id).filter(i => i.time);
   if (!ins.length) return `<div class="card muted">Monte os times antes de lançar o resultado.</div>`;
   if (!admin()) {
-    if (!temResultado(j)) return `<div class="card muted">Resultado ainda não lançado.</div>`;
+    const eu = ins.find(i => i.jogadorId === st.user.id);
+    let h = '';
+    if (eu && j.status !== 'aberta' && j.votacao !== 'fechada') {
+      const g = st.meusGols && st.meusGols.id === eu.id ? st.meusGols.v : num(eu.gols);
+      h += `<div class="card"><div class="kick">Seus gols neste jogo</div><div class="row" style="margin-top:10px">
+        <div class="step"><button data-act="meuGol" data-id="${eu.id}" data-d="-1">−</button><b>${g}</b><button data-act="meuGol" data-id="${eu.id}" data-d="1">+</button></div>
+        <div class="grow"></div><button class="btn pri sm" data-act="salvarMeuGol" data-id="${eu.id}" ${g === num(eu.gols) ? 'disabled' : ''}>Salvar</button></div>
+        <div class="tiny" style="margin-top:8px">O time todo recebe o aviso. Dá para corrigir até a votação ser encerrada.</div></div>`;
+    }
+    if (!temResultado(j)) h += `<div class="small muted" style="margin-bottom:8px">Placar ainda não lançado pelo administrador.</div>`;
     const gols = ins.filter(i => num(i.gols) > 0).sort((a, b) => num(b.gols) - num(a.gols));
-    return `<div class="list">${gols.map(i => `<div class="li">${av(i.jogadorId, '', nomeI(i))}<div class="grow"><b>${esc(nomeI(i))}</b> <span class="tiny">${i.time === 'V' ? '🔴' : '🔵'}</span></div><b class="disp">${i.gols} ⚽</b></div>`).join('') || '<div class="li empty">Sem gols registrados</div>'}</div>`;
+    return h + `<div class="sec" style="margin-top:6px"><h3>⚽ Gols registrados</h3></div><div class="list">${gols.map(i => `<div class="li">${av(i.jogadorId, '', nomeI(i))}<div class="grow"><b>${esc(nomeI(i))}</b> <span class="tiny">${i.time === 'V' ? '🔴' : '🔵'}</span></div><b class="disp">${i.gols} ⚽</b></div>`).join('') || '<div class="li empty">Sem gols registrados</div>'}</div>`;
   }
   const stp = (act, id, v, extra = '') => `<div class="step"><button data-act="${act}" data-id="${id}" data-d="-1" ${extra}>−</button><b>${v}</b><button data-act="${act}" data-id="${id}" data-d="1" ${extra}>+</button></div>`;
   const r = st.res && st.res.jogoId === j.id ? st.res : (st.res = {
@@ -518,7 +571,7 @@ function jVotacao(j) {
   const meuVoto = (D().Votos || []).find(v => v.jogoId === j.id && v.eleitorId === me);
   let h = '';
   if (j.votacao === 'fechada' || csv(j.craqueIds).length) {
-    h += `<div class="grid2"><div class="stat"><div class="k">⭐ Craque</div>${csv(j.craqueIds).map(id => `<div class="row" style="margin-top:8px">${av(id, 'sm')}<b>${esc(J(id)?.apelido)}</b></div>`).join('') || '<div class="muted">—</div>'}</div>
+    h += `<div class="grid2"><div class="stat"><div class="k">⭐ Bola cheia</div>${csv(j.craqueIds).map(id => `<div class="row" style="margin-top:8px">${av(id, 'sm')}<b>${esc(J(id)?.apelido)}</b></div>`).join('') || '<div class="muted">—</div>'}</div>
       <div class="stat"><div class="k">🎈 Bola murcha</div>${csv(j.murchaIds).map(id => `<div class="row" style="margin-top:8px">${av(id, 'sm')}<b>${esc(J(id)?.apelido)}</b></div>`).join('') || '<div class="muted">—</div>'}</div></div>`;
   }
   const votos = (D().Votos || []).filter(v => v.jogoId === j.id);
@@ -600,7 +653,7 @@ const emojiEv = e => /churras/i.test(e.nome) ? '🍖🍖🍖🍖🍖' : /festa|a
 
 /* ================= TABELA ================= */
 function vTabela() {
-  const tabs = [['pontos', '🏆 Pontos'], ['gols', '⚽ Artilharia'], ['craques', '⭐ Craque'], ['murchas', '🎈 B. murcha'], ['goleiros', '🥅 Goleiros']];
+  const tabs = [['pontos', '🏆 Pontos'], ['gols', '⚽ Artilharia'], ['craques', '⭐ B. cheia'], ['murchas', '🎈 B. murcha'], ['goleiros', '🥅 Goleiros']];
   let h = `<div class="seg">${tabs.map(([k, l]) => `<button class="${st.tabTab === k ? 'on' : ''}" data-act="tabTab" data-t="${k}">${l}</button>`).join('')}</div>`;
   const me = st.user.id;
   if (st.tabTab === 'goleiros') {
@@ -768,6 +821,95 @@ function vElenco() {
     ${admin() ? `<label class="row small muted"><input type="checkbox" data-act="inativos" ${st.inativos ? 'checked' : ''}> Mostrar inativos</label>` : ''}`;
 }
 
+/* ================= GUIA DA DEMONSTRAÇÃO ================= */
+function guiaDemo() {
+  const it = (ic, t, d, act) => `<div class="li ${act ? 'click' : ''}" ${act || ''}><span style="font-size:20px;width:26px;text-align:center">${ic}</span><div class="grow"><b>${t}</b><div class="tiny">${d}</div></div>${act ? '<span class="muted">›</span>' : ''}</div>`;
+  return `<div class="card hero"><div class="kick">Demonstração • dados fictícios</div><div class="big" style="font-size:24px;margin:4px 0">Bem-vindo, ${esc(st.user.apelido)}!</div>
+    <div class="small muted">Você entrou como <b>${admin() ? 'Administrador' : 'Jogador'}</b>. Toque nos itens para conhecer:</div></div>
+    <div class="list">
+      ${it('📋', 'Lista da quinta', 'Entre ou saia da lista com um toque. O texto do WhatsApp sai pronto.', 'data-act="verJogo" data-id="g_0511" data-sub="lista"')}
+      ${it('⚔️', 'Times e resultado', 'Veja a última rodada: times, placar e quem fez gol.', 'data-act="verJogo" data-id="g_2910" data-sub="resultado"')}
+      ${it('🗳️', 'Bola cheia e bola murcha', 'Votação aberta para quem jogou, com voto público.', 'data-act="verJogo" data-id="g_2910" data-sub="votacao"')}
+      ${it('🏆', 'Tabelas', 'Pontuação, artilharia, bola cheia, bola murcha e goleiros.', 'data-act="tab" data-t="tabela"')}
+      ${it('📈', 'Números e PDF', 'Últimas rodadas, aproveitamento e relatório da rodada.', 'data-act="tab" data-t="indic"')}
+      ${!admin() ? '' : it('💰', 'Caixa e pendências', 'Saldo do time, quem falta pagar, uniformes e patrocínios.', 'data-act="tab" data-t="grana"')}
+      ${it('🎉', 'Eventos', 'Churrascos e festas com lista de quem vai e quem pagou.', 'data-act="tab" data-t="eventos"')}
+      ${it('📸', 'Perfil e mídias', 'Cada um tem sua página com números, fotos e vídeos.', 'data-act="perfil"')}
+      ${admin() ? it('🛠️', 'Só para administradores', 'Montar times equilibrados, lançar placar, marcar pagamentos e editar os textos.', 'data-act="tab" data-t="config"') : ''}
+      ${it('🔔', 'Notificações', 'No app de verdade, avisa no celular quando alguém vota, lança gol ou abre a lista.', '')}
+    </div>
+    <div class="btns" style="margin-bottom:18px">${window.EFC_DEMO_SO_JOGADOR ? '' : `<button class="btn ghost grow" data-act="demoTrocar">${admin() ? '⚽ Ver como Jogador' : '🛠️ Ver como Administrador'}</button>`}<button class="btn ghost ${window.EFC_DEMO_SO_JOGADOR ? 'grow' : ''}" data-act="demoGuiaOk">Esconder guia</button></div>`;
+}
+
+/* ================= NOTIFICAÇÕES ================= */
+const TIPOS_NOTIF = [['voto', 'Votos na bola cheia e bola murcha'], ['gol', 'Gols lançados pelos jogadores'], ['lista', 'Lista aberta'],
+  ['times', 'Times definidos'], ['resultado', 'Resultado do jogo'], ['votacao', 'Votação encerrada'], ['evento', 'Novo evento']];
+const IOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const instalado = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+const pushSuportado = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+function b64u8(t) { const p = '='.repeat((4 - t.length % 4) % 4), b = atob((t + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, c => c.charCodeAt(0)); }
+async function metaSW() {
+  if (DEMO || !('caches' in window)) return;
+  try { const c = await caches.open('efc-meta'); if (st.token) await c.put('/__efc/token', new Response(st.token)); else await c.delete('/__efc/token'); } catch (e) { }
+}
+async function minhaAssinatura() {
+  if (!pushSuportado()) return null;
+  try { const reg = await navigator.serviceWorker.getRegistration(); return reg ? await reg.pushManager.getSubscription() : null; } catch (e) { return null; }
+}
+async function estadoNotif() {
+  if (DEMO) return 'demo';
+  if (IOS && !instalado()) return 'ios-instalar';
+  if (!pushSuportado()) return 'sem-suporte';
+  if (Notification.permission === 'denied') return 'bloqueado';
+  return (await minhaAssinatura()) ? 'ligado' : 'desligado';
+}
+const aparelho = () => IOS ? 'iPhone' : /android/i.test(navigator.userAgent) ? 'Android' : 'Computador';
+async function sincronizarNotif() {
+  st.notif = await estadoNotif();
+  if (st.notif === 'ligado') { const sub = await minhaAssinatura(); if (sub) api('assinar', { sub: sub.toJSON(), aparelho: aparelho() }).catch(() => { }); }
+  metaSW();
+}
+async function ligarNotif() {
+  const perm = await Notification.requestPermission(); // precisa ser a 1ª coisa depois do toque
+  if (perm !== 'granted') throw new Error('Permissão negada. Libere as notificações do app nas configurações do celular.');
+  const reg = await navigator.serviceWorker.ready;
+  const { chave } = await api('vapid');
+  if (!chave) throw new Error('O servidor ainda não tem a chave das notificações. Rode "configurar" no Apps Script.');
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u8(chave) });
+  await api('assinar', { sub: sub.toJSON(), aparelho: aparelho() });
+  await metaSW(); st.notif = 'ligado';
+}
+async function desligarNotif() {
+  const sub = await minhaAssinatura();
+  if (sub) { await api('desassinar', { endpoint: sub.endpoint }).catch(() => { }); await sub.unsubscribe().catch(() => { }); }
+  st.notif = await estadoNotif();
+}
+function telaNotif() {
+  const e = st.notif;
+  const corpo = {
+    demo: `<p class="muted">As notificações funcionam no app instalado pelo link do time (não nesta demonstração).</p>`,
+    'ios-instalar': `<p>No iPhone as notificações só funcionam com o app instalado:</p><ol class="small" style="padding-left:18px;line-height:1.7">
+      <li>Abra o link do app no <b>Safari</b></li><li>Toque em <b>Compartilhar</b> (quadrado com seta)</li><li><b>Adicionar à Tela de Início</b></li>
+      <li>Abra pelo ícone do escudo e volte aqui</li></ol><p class="tiny">Precisa do iOS 16.4 ou mais novo.</p>`,
+    'sem-suporte': `<p class="muted">Este navegador não recebe notificações. No Android use o <b>Chrome</b>; no iPhone, o app instalado na Tela de Início (iOS 16.4+).</p>`,
+    bloqueado: `<p>As notificações estão <b>bloqueadas</b> para o app neste aparelho.</p><p class="small muted">${IOS ? 'Ajustes do iPhone → Notificações → Entrevero → Permitir.' : 'No Chrome: toque no cadeado/ícone ao lado do endereço (ou Configurações do site) → Notificações → Permitir.'} Depois volte aqui.</p>`,
+    desligado: `<p>Receba aviso na hora quando alguém votar, lançar gols, abrir a lista, sair o resultado e mais.</p><button class="btn pri full" data-act="notifLigar">🔔 Ativar notificações</button>`,
+    ligado: `<div class="card" style="margin-bottom:12px"><span class="chip ok">✓ Ativadas neste aparelho</span></div>
+      <div class="btns" style="flex-direction:column"><button class="btn full" data-act="notifTeste">📨 Enviar notificação de teste</button>
+      <button class="btn danger full" data-act="notifDesligar">Desativar neste aparelho</button></div>`
+  }[e] || '';
+  modal('🔔 Notificações', corpo + (admin() && e !== 'demo' ? `<div class="tiny" style="margin-top:14px">Quais avisos o time recebe: ⚙️ Configurações e textos → Notificações.</div>` : ''));
+}
+function quando(iso) {
+  const d = new Date(iso); if (isNaN(d)) return '';
+  const m = Math.round((Date.now() - d) / 60000);
+  if (m < 1) return 'agora'; if (m < 60) return `há ${m} min`; if (m < 24 * 60) return `há ${Math.round(m / 60)} h`;
+  if (m < 48 * 60) return 'ontem'; return fcurta(iso.slice(0, 10));
+}
+const listaAvisos = n => `<div class="list">${(D().Avisos || []).slice(0, n).map(a => `<div class="li" style="align-items:flex-start"><div class="grow"><b>${esc(a.titulo)}</b>
+  <div class="small muted">${esc(a.texto)}</div></div><span class="tiny" style="white-space:nowrap">${quando(a.data)}</span></div>`).join('') || '<div class="li empty">Nenhum aviso ainda</div>'}</div>`;
+
 /* ================= INDICADORES ================= */
 function rodadasApp() {
   const base = num(cfg('rodadaBase', 34));
@@ -830,6 +972,11 @@ function vConfig() {
   return `<div class="sec" style="margin-top:0"><h2>⚙️ Configurações</h2></div>
     <form class="card" id="cfgForm"><div class="grid2">${CAMPOS.map(([k, l]) => `<label class="f" ${k === 'pix' ? 'style="grid-column:1/-1"' : ''}><span>${l}</span><input class="in" name="${k}" value="${esc(cfg(k))}"></label>`).join('')}</div>
     <button type="button" class="btn pri full" data-act="salvarCfg">Salvar configurações</button></form>
+    <div class="sec"><h2>🔔 Notificações</h2></div>
+    <form class="card" id="notifForm"><div class="small muted" style="margin-bottom:6px">Quais avisos o time recebe no celular:</div>
+      ${TIPOS_NOTIF.map(([k, l]) => `<label class="row" style="justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer"><span>${l}</span>
+        <input type="checkbox" name="notif_${k}" style="width:22px;height:22px;accent-color:var(--or)" ${cfg('notif_' + k) !== 'N' ? 'checked' : ''}></label>`).join('')}
+      <button type="button" class="btn pri full" style="margin-top:12px" data-act="salvarNotifCfg">Salvar</button></form>
     <div class="sec"><h2>✍️ Modelos de texto</h2></div>
     <div class="small muted" style="margin-bottom:10px">São os textos que o app monta para o WhatsApp. Edite como quiser; o que está entre chaves, como {DATA}, é preenchido sozinho.</div>
     <div class="list">${Object.entries(MODELOS).map(([k, m]) => `<div class="li click" data-act="editModelo" data-id="${k}"><div class="grow"><b>${m.nome}</b>
@@ -927,6 +1074,10 @@ const ACT = {
     <button class="btn full" style="margin-bottom:8px" data-act="tab" data-t="elenco">👥 Elenco</button>
     <button class="btn full" style="margin-bottom:8px" data-act="tab" data-t="galeria">📸 Galeria do time</button>
     ${admin() ? '<button class="btn full" style="margin-bottom:8px" data-act="tab" data-t="config">⚙️ Configurações e textos</button>' : ''}
+    ${window.EFC_DEMO_GUIA ? `<button class="btn full" style="margin-bottom:8px" data-act="demoGuia">🧭 Guia da demonstração</button>
+      ${window.EFC_DEMO_SO_JOGADOR ? '' : `<button class="btn full" style="margin-bottom:8px" data-act="demoTrocar">${admin() ? '⚽ Ver como Jogador' : '🛠️ Ver como Administrador'}</button>`}
+      <button class="btn full" style="margin-bottom:8px" data-act="demoReset">↺ Recomeçar demonstração</button>` : ''}
+    <button class="btn full" style="margin-bottom:8px" data-act="notifAbrir">🔔 Notificações${st.notif === 'ligado' ? ' <span class="chip ok">ativas</span>' : ''}</button>
     <button class="btn full" style="margin-bottom:8px" data-act="atualizar">🔄 Atualizar dados</button>
     <button class="btn danger full" data-act="sair">Sair</button>`),
   atualizar: () => { fechar(); fazer(async () => { await carregar(); toast('Atualizado'); }); },
@@ -1043,7 +1194,7 @@ const ACT = {
   definirCraque: () => {
     const j = jogo(st.jogoId), ins = inscritos(j.id).filter(i => i.time && i.jogadorId);
     const ops = sel => `<option value="">—</option>` + ins.map(i => `<option value="${i.jogadorId}" ${csv(sel).includes(i.jogadorId) ? 'selected' : ''}>${esc(nomeI(i))}</option>`).join('');
-    modal('Craque e Bola murcha', `<label class="f"><span>⭐ Craque</span><select class="in" id="dc">${ops(j.craqueIds)}</select></label>
+    modal('Bola cheia e bola murcha', `<label class="f"><span>⭐ Bola cheia</span><select class="in" id="dc">${ops(j.craqueIds)}</select></label>
       <label class="f"><span>🎈 Bola murcha</span><select class="in" id="dm">${ops(j.murchaIds)}</select></label>
       <button class="btn pri full" data-act="definirOk">Salvar</button>`);
   },
@@ -1100,7 +1251,8 @@ const ACT = {
   excluirGen: d => { if (!confirmar('Excluir este item?')) return; fechar(); fazer(() => excluir(d.tab, d.id, 'Excluído')); },
 
   abrirEvento: d => { st.eventoId = d.id; render(); scrollTo(0, 0); },
-  voltarEv: () => { st.eventoId = null; render(); },
+  voltarEv: () => voltar(),
+  voltar: () => voltar(),
   editEvento: d => { const e = d.id ? D().Eventos.find(x => x.id === d.id) : { nome: '', data: hoje(), valor: '', status: 'aberto', obs: '' };
     modal(d.id ? 'Editar evento' : 'Novo evento', `<form><input type="hidden" name="id" value="${esc(e.id || '')}">
       <label class="f"><span>Nome</span><input class="in" name="nome" value="${esc(e.nome)}" placeholder="Churrasco, confraternização..."></label>
@@ -1140,7 +1292,7 @@ const ACT = {
 
   verJog: d => { fechar(); st.voltar = st.tab === 'jogador' ? st.voltar : st.tab; st.jogadorId = d.id; st.tab = 'jogador'; render(); scrollTo(0, 0); },
   perfil: () => ACT.verJog({ id: st.user.id }),
-  voltarJog: () => { st.tab = st.voltar || 'elenco'; render(); },
+  voltarJog: () => voltar(),
   verMidia: d => verMidia(d.id),
   excluirMidia: d => { if (!confirmar('Excluir esta mídia?')) return; fechar();
     fazer(async () => { await api('excluirMidia', { id: d.id }); st.d.Midias = st.d.Midias.filter(m => m.id !== d.id); render(); toast('Mídia excluída'); }); },
@@ -1179,6 +1331,8 @@ const ACT = {
   inativos: () => { st.inativos = !st.inativos; render(); },
   pdf: (d, el) => fazer(async () => {
     if (el) { el.disabled = true; el.textContent = 'Gerando...'; }
+    pensar(true); await new Promise(r => setTimeout(r, 30));
+    try {
     const ult = jogosOrd().filter(temResultado).pop();
     const f1 = v => v.toFixed(1).replace('.', ',');
     const rel = {
@@ -1199,10 +1353,11 @@ const ACT = {
               (csv(r.j.craqueIds).map(id => J(id)?.apelido).join(', ') || '—') + ' / ' + (csv(r.j.murchaIds).map(id => J(id)?.apelido).join(', ') || '—')]; }) }
       ]
     };
-    const esc = $('.top img.crest')?.src || 'icons/escudo.png';
-    const nome = `Entrevero_Rodada-${rodadaAtual()}`;
-    const blob = await EfcPDF.relatorio(rel, esc);
-    const imgs = await EfcPDF.relatorio(rel, esc, true);
+    var esc = $('.top img.crest')?.src || 'icons/escudo.png';
+    var nome = `Entrevero_Rodada-${rodadaAtual()}`;
+    var blob = await EfcPDF.relatorio(rel, esc);
+    var imgs = await EfcPDF.relatorio(rel, esc, true);
+    } finally { pensar(false); if (el) { el.disabled = false; el.textContent = '📄 Exportar PDF'; } }
     if (el) { el.disabled = false; el.textContent = '📄 Exportar PDF'; }
     const url = URL.createObjectURL(blob);
     const arq = (() => { try { return new File([blob], nome + '.pdf', { type: 'application/pdf' }); } catch (e) { return null; } })();
@@ -1231,12 +1386,33 @@ const ACT = {
   insVar: d => { const t = $('#tplTxt'), a = t.selectionStart ?? t.value.length; t.value = t.value.slice(0, a) + d.v + t.value.slice(t.selectionEnd ?? a); t.focus(); t.selectionStart = t.selectionEnd = a + d.v.length; },
   salvarModelo: d => { const v = $('#tplTxt').value; fechar(); fazer(() => salvar('Config', { id: 'tpl_' + d.id, valor: v === MODELOS[d.id].padrao ? '' : v }, 'Modelo salvo ✍️')); },
   restaurarModelo: d => { if (!confirmar('Voltar este texto para o padrão?')) return; fechar(); fazer(() => salvar('Config', { id: 'tpl_' + d.id, valor: '' }, 'Modelo restaurado')); },
+  notifAbrir: () => { fechar(); telaNotif(); },
+  demoEntrar: (d, el) => { const f = $('#lf'); f.login.value = d.u; f.senha.value = 'demo'; f.requestSubmit ? f.requestSubmit() : f.dispatchEvent(new Event('submit')); },
+  demoGuiaOk: () => { try { localStorage.setItem('efc_demo_guia_ok', '1'); } catch (e) { } render(); },
+  demoGuia: () => { fechar(); try { localStorage.removeItem('efc_demo_guia_ok'); } catch (e) { } st.tab = 'inicio'; render(); scrollTo(0, 0); },
+  demoTrocar: () => { const u = admin() ? 'matheus' : 'emax'; st.tab = 'inicio'; sair(); setTimeout(() => ACT.demoEntrar({ u }), 50); },
+  demoReset: () => { try { Object.keys(localStorage).filter(k => k.startsWith('efc_')).forEach(k => localStorage.removeItem(k)); } catch (e) { } location.reload(); },
+  notifDica: () => { try { localStorage.setItem('efc_notif_dica', '1'); } catch (e) { } render(); },
+  notifLigar: (d, el) => { el.disabled = true; el.textContent = 'Ativando...';
+    ligarNotif().then(async () => { const r = await api('testarAviso').catch(() => null); telaNotif(); render(); toast(r ? 'Notificações ativadas! Chegou um teste 🔔' : 'Notificações ativadas! 🔔'); })
+      .catch(e => { el.disabled = false; el.textContent = '🔔 Ativar notificações'; toast(e.message || String(e), true); estadoNotif().then(x => { st.notif = x; }); }); },
+  notifDesligar: () => fazer(async () => { await desligarNotif(); telaNotif(); render(); toast('Notificações desativadas neste aparelho'); }),
+  notifTeste: () => fazer(async () => { const r = await api('testarAviso'); toast(r.aparelhos ? 'Enviado! Deve chegar em instantes 📨' : 'Nenhum aparelho seu está cadastrado. Ative de novo.', !r.aparelhos); }),
+  verAvisos: () => modal('🔔 Avisos', listaAvisos(30)),
+  salvarNotifCfg: (d, el) => {
+    const f = el.closest('form');
+    fazer(() => salvar('Config', TIPOS_NOTIF.map(([k]) => ({ id: 'notif_' + k, valor: f.querySelector(`[name=notif_${k}]`).checked ? 'S' : 'N' })), 'Notificações salvas 🔔'));
+  },
+  meuGol: d => { const i = D().Inscricoes.find(x => x.id === d.id); const v = st.meusGols && st.meusGols.id === d.id ? st.meusGols.v : num(i.gols);
+    st.meusGols = { id: d.id, v: Math.max(0, Math.min(30, v + num(d.d))) }; render(); },
+  salvarMeuGol: d => { const i = D().Inscricoes.find(x => x.id === d.id), v = st.meusGols ? st.meusGols.v : num(i.gols);
+    fazer(async () => { await salvar('Inscricoes', Object.assign({}, i, { gols: v }), 'Gols salvos! O time foi avisado ⚽'); st.meusGols = null; render(); }); },
   galF: d => { st.galFiltro = d.id; render(); }
 };
 function mostrarAcesso(nome, login, senha) {
   mostrarTexto('Acesso de ' + esc(nome), preencher('acesso', { NOME: nome, USUARIO: login, SENHA: senha, LINK: location.origin + location.pathname }));
 }
-function confirmar(m) { return window.confirm(m); }
+function confirmar(m) { if (window.EFC_DEMO_GUIA) return true; try { return window.confirm(m); } catch (e) { return true; } }
 function formJogo(j) {
   modal(j.id ? 'Editar jogo' : 'Nova lista', `<form><input type="hidden" name="id" value="${esc(j.id || '')}">
     <div class="grid2"><label class="f"><span>Data</span><input class="in" type="date" name="data" value="${esc(j.data)}"></label>
@@ -1261,8 +1437,83 @@ document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   if (el.tagName === 'INPUT' && el.type === 'checkbox') return;
   const f = ACT[el.dataset.act]; if (!f) return;
-  e.preventDefault(); f(el.dataset, el);
+  e.preventDefault();
+  const antes = st.d ? snapNav() : null, chave = st.d ? chaveNav() : null;
+  f(el.dataset, el);
+  if (antes && st.d && chaveNav() !== chave && !['voltar', 'voltarJog', 'voltarEv', 'sair', 'demoTrocar', 'demoReset'].includes(el.dataset.act)) empilhar(antes);
 });
+
+/* ================= VOLTAR (botão, gesto e voltar do Android) ================= */
+const NAV = { pilha: [] };
+const HIST = () => !DEMO && !!(window.history && history.pushState);
+const snapNav = () => JSON.stringify({ tab: st.tab, jogoId: st.jogoId, jogoTab: st.jogoTab, tabTab: st.tabTab, granaTab: st.granaTab, eventoId: st.eventoId, jogadorId: st.jogadorId, voltar: st.voltar });
+const chaveNav = () => [st.tab, st.eventoId || '', st.tab === 'jogador' ? st.jogadorId : ''].join('|');
+function empilhar(sn) {
+  NAV.pilha.push(sn); if (NAV.pilha.length > 40) NAV.pilha.shift();
+  if (HIST()) { try { history.pushState({ efc: NAV.pilha.length }, ''); } catch (e) { } }
+  atualizarVoltar();
+}
+const podeVoltar = () => !!$('#modal') || NAV.pilha.length > 0 || (st.d && st.tab !== 'inicio');
+function voltarInterno() {
+  if ($('#modal')) { fechar(); return; }
+  const sn = NAV.pilha.pop();
+  if (sn) { Object.assign(st, JSON.parse(sn)); }
+  else if (st.tab !== 'inicio') { st.tab = 'inicio'; st.eventoId = null; }
+  st.rascunho = null; st.res = null; render(); scrollTo(0, 0); atualizarVoltar();
+}
+function voltar() {
+  if ($('#modal')) { fechar(); return; }
+  if (HIST() && NAV.pilha.length && history.state && history.state.efc) history.back();
+  else voltarInterno();
+}
+window.addEventListener('popstate', () => {
+  if (!st.d) return;
+  if ($('#modal')) { fechar(); if (HIST() && NAV.pilha.length) { try { history.pushState({ efc: NAV.pilha.length }, ''); } catch (e) { } } return; }
+  voltarInterno();
+});
+function atualizarVoltar() { const b = $('#btnVoltar'); if (b) b.classList.toggle('hidden', !(NAV.pilha.length > 0 || (st.d && st.tab !== 'inicio'))); }
+
+/* gesto: arrastar da borda esquerda para a direita */
+let gesto = null;
+document.addEventListener('touchstart', e => {
+  if (e.touches.length !== 1 || !st.d) return;
+  const t = e.touches[0];
+  if (t.clientX > 40 || !podeVoltar()) return;
+  gesto = { x: t.clientX, y: t.clientY, dx: 0, t: Date.now(), ativo: false };
+}, { passive: true });
+document.addEventListener('touchmove', e => {
+  if (!gesto) return;
+  const t = e.touches[0], dx = t.clientX - gesto.x, dy = t.clientY - gesto.y;
+  if (!gesto.ativo) {
+    if (Math.abs(dy) > 12 && Math.abs(dy) > dx) { gesto = null; return; }
+    if (dx < 12) return;
+    gesto.ativo = true; gesto.alvo = $('#modal .sheet') || $('#main');
+    if (!gesto.alvo) { gesto = null; return; }
+    gesto.alvo.style.transition = 'none'; document.body.classList.add('arrastando');
+  }
+  gesto.dx = Math.max(0, dx);
+  gesto.alvo.style.transform = `translateX(${gesto.dx}px)`;
+  gesto.alvo.style.opacity = String(1 - Math.min(0.45, gesto.dx / 900));
+  e.preventDefault();
+}, { passive: false });
+function fimGesto() {
+  if (!gesto) return;
+  const g = gesto; gesto = null; document.body.classList.remove('arrastando');
+  if (!g.ativo) return;
+  const vel = g.dx / Math.max(1, Date.now() - g.t), vai = g.dx > innerWidth * 0.3 || (vel > 0.5 && g.dx > 40);
+  g.alvo.style.transition = 'transform .18s ease-out, opacity .18s ease-out';
+  if (!vai) { g.alvo.style.transform = ''; g.alvo.style.opacity = ''; return; }
+  g.alvo.style.transform = `translateX(${innerWidth}px)`; g.alvo.style.opacity = '0';
+  setTimeout(() => {
+    g.alvo.style.transition = 'none'; g.alvo.style.transform = ''; g.alvo.style.opacity = '';
+    voltar();
+    const m = $('#main'); if (!m) return;
+    m.style.transition = 'none'; m.style.transform = 'translateX(-28px)'; m.style.opacity = '.55';
+    requestAnimationFrame(() => requestAnimationFrame(() => { m.style.transition = 'transform .2s ease-out, opacity .2s ease-out'; m.style.transform = ''; m.style.opacity = ''; }));
+  }, 170);
+}
+document.addEventListener('touchend', fimGesto);
+document.addEventListener('touchcancel', fimGesto);
 document.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset && el.dataset.act === 'inativos') ACT.inativos();
@@ -1298,13 +1549,17 @@ function telaLogin(msg) {
     <label class="f"><span>Senha</span><input class="in" type="password" name="senha" autocomplete="current-password"></label>
     ${msg ? `<div class="small" style="color:var(--red);margin-bottom:10px">${esc(msg)}</div>` : ''}
     <button class="btn pri full">Entrar</button>
-    <div class="tiny" style="text-align:center;margin-top:14px">Primeiro acesso? Use o usuário e a senha temporária que você recebeu.</div></form></div>`;
+    <div class="tiny" style="text-align:center;margin-top:14px">${window.EFC_DEMO_GUIA ? 'Na demonstração, use seu apelido (ex.: matheus, luis, victor) e a senha <b>demo</b>.' : 'Primeiro acesso? Use o usuário e a senha temporária que você recebeu.'}</div></form>
+    ${window.EFC_DEMO_GUIA ? `<div class="box card" style="margin-top:18px"><div class="kick">Demonstração</div><b style="display:block;margin:4px 0 6px">Teste o app do time sem criar conta</b>
+      <div class="small muted" style="margin-bottom:12px">Os dados são fictícios e o que você mexer fica só no seu celular.</div>
+      <div class="btns" style="flex-direction:column"><button class="btn pri full" data-act="demoEntrar" data-u="${window.EFC_DEMO_SO_JOGADOR ? 'visitante' : 'matheus'}">⚽ Entrar como Jogador</button>
+      ${window.EFC_DEMO_SO_JOGADOR ? '' : '<button class="btn full" data-act="demoEntrar" data-u="emax">🛠️ Entrar como Administrador</button>'}</div></div>` : ''}</div>`;
   $('#lf').onsubmit = async e => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
     const b = e.target.querySelector('button'); b.disabled = true; b.textContent = 'Entrando...';
     try {
       const r = await api('login', f);
-      st.token = r.token; localStorage.setItem(DEMO ? 'efc_token_demo' : 'efc_token', r.token); st.user = r.usuario;
+      st.token = r.token; try { localStorage.setItem(DEMO ? 'efc_token_demo' : 'efc_token', r.token); } catch (x) { } st.user = r.usuario; metaSW();
       if (r.trocarSenha) telaSenha(true, f.senha); else iniciar();
     } catch (err) { telaLogin(err.message); }
   };
@@ -1327,19 +1582,21 @@ function telaSenha(primeiro, atual) {
 }
 function sair(silencioso) {
   const estava = !!st.d;
-  st.token = ''; st.user = null; st.d = null; localStorage.removeItem(DEMO ? 'efc_token_demo' : 'efc_token'); fechar();
+  if (!silencioso && !DEMO) desligarNotif().catch(() => { });
+  st.token = ''; st.user = null; st.d = null; try { localStorage.removeItem(DEMO ? 'efc_token_demo' : 'efc_token'); } catch (x) { } fechar(); metaSW();
   telaLogin(silencioso && estava ? 'Sua sessão expirou. Entre novamente.' : '');
 }
-async function carregar() {
-  const r = await api('dados'); st.d = r.dados; st.user = r.usuario;
+async function carregar(silencioso) {
+  const r = await api('dados', {}, silencioso); st.d = r.dados; st.user = r.usuario;
   await carregarFotos(); render();
 }
 async function iniciar() {
-  document.body.innerHTML = '<div class="spin"></div>';
+  document.body.innerHTML = telaCarregando();
   try { await carregar(); } catch (e) { if (!st.token) return; document.body.innerHTML = `<div class="login"><p>${esc(e.message)}</p><button class="btn pri" onclick="location.reload()">Tentar de novo</button></div>`; return; }
-  shell(); render();
+  NAV.pilha = []; shell(); render();
+  sincronizarNotif().then(() => render()).catch(() => { });
 }
-window.addEventListener('focus', () => { if (st.d && !$('#modal') && !st.rascunho && !st.res) carregar().catch(() => { }); });
+window.addEventListener('focus', () => { if (st.d && !$('#modal') && !st.rascunho && !st.res) carregar(true).catch(() => { }); });
 
 if ('serviceWorker' in navigator && !DEMO) navigator.serviceWorker.register('sw.js').catch(() => { });
 if (st.token) iniciar(); else telaLogin();

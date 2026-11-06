@@ -17,9 +17,13 @@ var TABELAS = {
   EventoParticipantes: ['id','eventoId','jogadorId','nomeAvulso','valor','pago'],
   EventoGastos: ['id','eventoId','descricao','valor'],
   Midias: ['id','jogadorId','autorId','tipo','mime','arquivoId','legenda','data','jogoId'],
+  Avisos: ['id','data','tipo','titulo','texto','autorId','para'],
+  Assinaturas: ['id','jogadorId','endpoint','p256dh','auth','aparelho','criado'],
   Sessoes: ['id','jogadorId','criado']
 };
 var PRIVADOS = ['foto','senhaHash','senhaTemp'];
+var INTERNAS = ['Sessoes','Avisos','Assinaturas'];
+var TIPOS_AVISO = ['voto','gol','lista','times','resultado','votacao','evento'];
 
 /* ---------- SHA-256 síncrono (sem dependências) ---------- */
 function efcSha256(ascii) {
@@ -75,7 +79,7 @@ function EfcServer(store) {
   }
 
   function podeSalvar(u, tab, novo, antigo) {
-    if (tab === 'Sessoes') return false;
+    if (INTERNAS.indexOf(tab) >= 0) return false;
     if (admin(u)) return true;
     var mudou = function (campos) {
       return campos.some(function (k) { return s(novo[k]) !== s(antigo ? antigo[k] : ''); });
@@ -83,7 +87,12 @@ function EfcServer(store) {
     if (tab === 'Inscricoes') {
       if (s(novo.jogadorId) !== s(u.id)) return false;
       if (antigo && s(antigo.jogadorId) !== s(u.id)) return false;
-      var j = find('Jogos', novo.jogoId); if (!j || s(j.status) !== 'aberta') return false;
+      var j = find('Jogos', novo.jogoId); if (!j) return false;
+      if (s(j.status) !== 'aberta') { // depois do sorteio: o jogador só lança os próprios gols
+        if (!antigo || s(antigo.time) === '' || s(j.votacao) === 'fechada') return false;
+        if (mudou(['jogoId', 'jogadorId', 'nomeAvulso', 'goleiro', 'ordem', 'time', 'pago', 'valor'])) return false;
+        var g = Number(novo.gols); return g >= 0 && g <= 30 && Math.floor(g) === g;
+      }
       if (mudou(['time', 'gols', 'valor'])) return false;
       if (s(novo.pago) === 'S' && (!antigo || s(antigo.pago) !== 'S')) return false;
       return true;
@@ -108,7 +117,7 @@ function EfcServer(store) {
     return false;
   }
   function podeExcluir(u, tab, antigo) {
-    if (tab === 'Sessoes') return false;
+    if (INTERNAS.indexOf(tab) >= 0) return false;
     if (admin(u)) return true;
     if (tab === 'Inscricoes') {
       var j = find('Jogos', antigo.jogoId);
@@ -117,6 +126,55 @@ function EfcServer(store) {
     if (tab === 'EventoParticipantes') return s(antigo.jogadorId) === s(u.id) && s(antigo.pago) !== 'S';
     if (tab === 'Votos') { var jv = find('Jogos', antigo.jogoId); return s(antigo.eleitorId) === s(u.id) && jv && s(jv.votacao) === 'aberta'; }
     return false;
+  }
+
+  /* ---------- avisos / notificações ---------- */
+  function cfgv(k) { var c = find('Config', k); return c ? s(c.valor) : ''; }
+  function ap(id) { var j = find('Jogadores', id); return j ? s(j.apelido) : '—'; }
+  function dm(d) { d = s(d); return d ? d.slice(8, 10) + '/' + d.slice(5, 7) : ''; }
+  function gatilhos(me, tab, ant, fin, qtd, A) {
+    var nome = s(me.apelido), j;
+    if (tab === 'Votos') {
+      j = find('Jogos', fin.jogoId) || {};
+      A.push({ tipo: 'voto', titulo: ant ? '🗳️ Voto alterado' : '🗳️ Novo voto',
+        texto: nome + (ant ? ' mudou o voto' : ' votou') + ' (jogo ' + dm(j.data) + '): ⭐ ' + ap(fin.craqueId) + ' • 🎈 ' + ap(fin.murchaId) });
+    }
+    if (tab === 'Inscricoes' && qtd === 1 && ant && s(fin.jogadorId) === s(me.id) && s(fin.time) !== '' && s(ant.gols) !== s(fin.gols)) {
+      j = find('Jogos', fin.jogoId) || {}; var n = Number(fin.gols) || 0;
+      A.push({ tipo: 'gol', titulo: '⚽ Gols registrados', texto: nome + ' registrou ' + n + (n === 1 ? ' gol' : ' gols') + ' no jogo de ' + dm(j.data) + '.' });
+    }
+    if (tab === 'Jogos') {
+      if (s(fin.status) === 'aberta' && (!ant || s(ant.status) !== 'aberta'))
+        A.push({ tipo: 'lista', titulo: '📋 Lista aberta', texto: 'Jogo de ' + dm(fin.data) + ' às ' + s(fin.hora) + '. Garanta sua vaga!' });
+      if (s(fin.legado) !== 'S' && s(fin.golsVermelho) !== '' && s(fin.golsAzul) !== '' &&
+          (!ant || s(ant.golsVermelho) !== s(fin.golsVermelho) || s(ant.golsAzul) !== s(fin.golsAzul)))
+        A.push({ tipo: 'resultado', titulo: '🏁 Vermelho ' + s(fin.golsVermelho) + ' x ' + s(fin.golsAzul) + ' Azul',
+          texto: 'Resultado do jogo de ' + dm(fin.data) + '.' + (s(fin.votacao) === 'aberta' ? ' Votação da bola cheia e da bola murcha aberta!' : '') });
+      if (s(fin.votacao) === 'fechada' && ant && s(ant.votacao) !== 'fechada') {
+        var nomes = function (ids) { return s(ids).split(',').filter(Boolean).map(ap).join(', ') || '—'; };
+        A.push({ tipo: 'votacao', titulo: '⭐ Bola cheia: ' + nomes(fin.craqueIds), texto: '🎈 Bola murcha: ' + nomes(fin.murchaIds) + ' (jogo de ' + dm(fin.data) + ')' });
+      }
+    }
+    if (tab === 'Eventos' && !ant)
+      A.push({ tipo: 'evento', titulo: '🎉 Novo evento: ' + s(fin.nome), texto: dm(fin.data) + (Number(fin.valor) ? ' • R$ ' + s(fin.valor) + ' por pessoa' : '') + '. Confirme no app!' });
+  }
+  function registrarAvisos(A, me, para) {
+    var out = [];
+    A.forEach(function (x, i) {
+      if (!para && cfgv('notif_' + x.tipo) === 'N') return;
+      x.id = 'a_' + Date.now() + '_' + i + store.uuid().slice(0, 4); x.data = new Date().toISOString();
+      x.autorId = me ? me.id : ''; x.para = para || '';
+      store.upsert('Avisos', x); out.push(x);
+    });
+    return out;
+  }
+  function disparar(avisos, opt) {
+    if (!avisos.length || typeof store.notificar !== 'function') return;
+    try { store.notificar(avisos, opt); } catch (e) { }
+  }
+  function visiveis(me) {
+    return store.read('Avisos').filter(function (x) { return (!x.para || s(x.para) === s(me.id)); })
+      .sort(function (a, b) { return s(a.id) < s(b.id) ? 1 : -1; });
   }
 
   S.handle = function (req) {
@@ -148,12 +206,42 @@ function EfcServer(store) {
     if (a === 'dados') {
       var out = {};
       for (var t in TABELAS) {
-        if (t === 'Sessoes') continue;
-        var rows = store.read(t);
+        if (t === 'Sessoes' || t === 'Assinaturas') continue;
+        var rows = t === 'Avisos' ? visiveis(me).filter(function (x) { return s(x.tipo) !== 'teste'; }).slice(0, 30) : store.read(t);
         if (t === 'Jogadores') rows = rows.map(limpo);
+        if (!admin(me)) { // financeiro: jogador só vê o que é dele
+          if (t === 'Caixa' || t === 'Patrocinios') rows = [];
+          if (t === 'Cobrancas') rows = rows.filter(function (c) { var n = nrm(c.pessoa); return n && (n === nrm(me.apelido) || n === nrm(me.nome)); });
+        }
         out[t] = rows;
       }
       return { dados: out, usuario: limpo(me) };
+    }
+
+    if (a === 'avisos') { // usado pelo service worker ao receber a notificação
+      return { avisos: visiveis(me).filter(function (x) { return s(x.autorId) !== s(me.id) || s(x.para) === s(me.id); }).slice(0, 5) };
+    }
+    if (a === 'vapid') return { chave: typeof store.vapidPublica === 'function' ? store.vapidPublica() : '' };
+    if (a === 'assinar') {
+      var sub = req.sub || {}, keys = sub.keys || {};
+      if (!/^https:\/\//.test(s(sub.endpoint))) erro('Assinatura inválida.');
+      var aid = 'n_' + efcSha256(s(sub.endpoint)).slice(0, 20);
+      return store.withLock(function () {
+        store.upsert('Assinaturas', { id: aid, jogadorId: me.id, endpoint: s(sub.endpoint), p256dh: s(keys.p256dh), auth: s(keys.auth),
+          aparelho: s(req.aparelho).slice(0, 60), criado: new Date().toISOString() });
+        return { ok: true };
+      });
+    }
+    if (a === 'desassinar') {
+      var did = 'n_' + efcSha256(s(req.endpoint)).slice(0, 20), as = find('Assinaturas', did);
+      if (as && (s(as.jogadorId) === s(me.id) || admin(me))) store.withLock(function () { store.remove('Assinaturas', did); });
+      return { ok: true };
+    }
+    if (a === 'testarAviso') {
+      var t1 = registrarAvisos([{ tipo: 'teste', titulo: '🔔 Notificações ligadas!', texto: 'Tudo certo, ' + s(me.apelido) + '. Você vai receber os avisos do Entrevero.' }], null, me.id);
+      var qtdAp = store.read('Assinaturas').filter(function (x) { return s(x.jogadorId) === s(me.id); }).length;
+      disparar(t1, { so: me.id });
+      return { aparelhos: qtdAp };
     }
 
     if (a === 'fotos') {
@@ -205,8 +293,9 @@ function EfcServer(store) {
     if (a === 'salvar') {
       var tab = s(req.tabela); if (!TABELAS[tab]) erro('Tabela inválida.');
       var linhas = req.linhas || (req.linha ? [req.linha] : []);
-      return store.withLock(function () {
-        var salvos = [], extra = {};
+      var novos = [];
+      var resp = store.withLock(function () {
+        var salvos = [], extra = {}, A = [], mudouTime = false;
         linhas.forEach(function (l) {
           var novo = {}; for (var k in l) if (PRIVADOS.indexOf(k) < 0) novo[k] = l[k];
           if (!novo.id) novo.id = (tab.charAt(0).toLowerCase()) + '_' + store.uuid().slice(0, 8);
@@ -222,10 +311,19 @@ function EfcServer(store) {
             var tmp2 = senhaTemp(); final.senhaTemp = tmp2; final.senhaHash = efcHash(final.login, tmp2); final.trocarSenha = 'S';
             extra.login = final.login; extra.senhaTemp = tmp2;
           }
+          if (tab === 'Inscricoes' && antigo && s(antigo.time) !== s(final.time) && s(final.time) !== '') mudouTime = true;
+          gatilhos(me, tab, antigo, final, linhas.length, A);
           store.upsert(tab, final); salvos.push(tab === 'Jogadores' ? limpo(final) : final);
         });
+        if (mudouTime && linhas.length > 1) {
+          var jt = find('Jogos', linhas[0].jogoId || (salvos[0] || {}).jogoId) || {};
+          A.push({ tipo: 'times', titulo: '⚔️ Times definidos', texto: 'A escalação do jogo de ' + dm(jt.data) + ' está no app. 🔴 x 🔵' });
+        }
+        novos = registrarAvisos(A, me);
         return { linhas: salvos, extra: extra };
       });
+      disparar(novos, { excluir: me.id });
+      return resp;
     }
 
     if (a === 'excluir') {
@@ -243,6 +341,7 @@ function EfcServer(store) {
     erro('Ação desconhecida: ' + a);
   };
 
+  function nrm(t) { return s(t).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, ''); }
   function slug(t) {
     return s(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
   }

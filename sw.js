@@ -1,4 +1,4 @@
-const V = 'efc-v8';
+const V = 'efc-v9';
 self.window = self;
 try { importScripts('config.js'); } catch (e) { }
 const ARQ = ['./', 'index.html', 'styles.css', 'app.js', 'core.js', 'pdf.js', 'config.js', 'manifest.webmanifest', 'icons/escudo.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png'];

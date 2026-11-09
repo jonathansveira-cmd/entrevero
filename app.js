@@ -118,7 +118,11 @@ const jogo = id => (D().Jogos || []).find(j => j.id === id);
 const jogosOrd = () => [...(D().Jogos || [])].sort((a, b) => a.data < b.data ? -1 : 1);
 const inscritos = jid => (D().Inscricoes || []).filter(i => i.jogoId === jid).sort((a, b) => num(a.ordem) - num(b.ordem));
 const valorI = (i, j) => !blank(i.valor) ? num(i.valor) : (yes(i.goleiro) ? num(j.valorGoleiro) : num(j.valorJogador));
-const jogoAtual = () => { const o = jogosOrd(); return o.find(j => j.status === 'aberta') || o.filter(j => j.status !== 'encerrada').pop() || o[o.length - 1]; };
+const ativos = () => jogosOrd().filter(j => !yes(j.arquivado));
+const travaJogo = j => { if (!blank(j.golsVermelho) || !blank(j.golsAzul)) return 'placar lançado';
+  const ins = inscritos(j.id); if (ins.some(i => yes(i.pago))) return 'pagamento marcado'; if (ins.some(i => num(i.gols) > 0)) return 'gols lançados';
+  if ((D().Votos || []).some(v => v.jogoId === j.id)) return 'votos'; return ''; };
+const jogoAtual = () => { const o = ativos(); if (!o.length) return null; return o.find(j => j.status === 'aberta') || o.filter(j => j.status !== 'encerrada').pop() || o[o.length - 1]; };
 const temResultado = j => !blank(j.golsVermelho) && !blank(j.golsAzul) && !yes(j.legado);
 
 function stats() {
@@ -378,13 +382,14 @@ function vJogo() {
   const todos = jogosOrd();
   if (!st.jogoId || !jogo(st.jogoId)) st.jogoId = jogoAtual()?.id;
   const j = jogo(st.jogoId);
-  const recentes = todos.slice(-6).reverse();
+  const recentes = ativos().slice(-6).reverse();
+  if (j && yes(j.arquivado)) recentes.unshift(j);
   let h = `<div class="row" style="overflow-x:auto;gap:8px;margin-bottom:14px;padding-bottom:2px">
     ${admin() ? `<button class="btn sm pri" data-act="novoJogo">+ Nova lista</button>` : ''}
     ${recentes.map(g => `<button class="chip ${g.id === st.jogoId ? 'or' : ''}" style="border:0;padding:8px 12px;white-space:nowrap" data-act="selJogo" data-id="${g.id}">${fcurta(g.data)}</button>`).join('')}</div>`;
   if (!j) return h + `<div class="card muted">Nenhum jogo ainda. ${admin() ? 'Toque em “+ Nova lista”.' : ''}</div>`;
   const stLbl = { aberta: ['or', 'Lista aberta'], fechada: ['blue', 'Lista fechada'], encerrada: ['', 'Encerrado'] }[j.status] || ['', j.status];
-  h += `<div class="card hero"><div class="row"><div class="grow"><div class="kick">${DIAS[dt(j.data).getDay()]}</div>
+  h += `<div class="card hero"><div class="row"><div class="grow"><div class="kick">${DIAS[dt(j.data).getDay()]}${yes(j.arquivado) ? ' • 🗄️ Arquivado' : ''}</div>
     <div class="big">${fdata(j.data)}</div><div class="muted small">${esc(j.hora)} • quadra ${brl(j.quadra)}</div></div>
     <div style="text-align:right"><span class="chip ${stLbl[0]}">${stLbl[1]}</span>${admin() ? `<div style="margin-top:8px"><button class="btn sm ghost" data-act="editJogo">Editar</button></div>` : ''}</div></div>
     ${temResultado(j) ? `<div class="score" style="margin-top:10px"><span class="V">${j.golsVermelho}</span><span class="tiny">x</span><span class="A">${j.golsAzul}</span></div>` : ''}
@@ -1073,6 +1078,7 @@ const ACT = {
     <button class="btn full" style="margin-bottom:8px" data-act="perfil">⚽ Meu perfil e mídias</button>
     <button class="btn full" style="margin-bottom:8px" data-act="tab" data-t="elenco">👥 Elenco</button>
     <button class="btn full" style="margin-bottom:8px" data-act="tab" data-t="galeria">📸 Galeria do time</button>
+    ${admin() ? `<button class="btn full" style="margin-bottom:8px" data-act="verArquivados">🗄️ Jogos arquivados${(D().Jogos || []).some(j => yes(j.arquivado)) ? ` <span class="chip">${D().Jogos.filter(j => yes(j.arquivado)).length}</span>` : ''}</button>` : ''}
     ${admin() ? '<button class="btn full" style="margin-bottom:8px" data-act="tab" data-t="config">⚙️ Configurações e textos</button>' : ''}
     ${window.EFC_DEMO_GUIA ? `<button class="btn full" style="margin-bottom:8px" data-act="demoGuia">🧭 Guia da demonstração</button>
       ${window.EFC_DEMO_SO_JOGADOR ? '' : `<button class="btn full" style="margin-bottom:8px" data-act="demoTrocar">${admin() ? '⚽ Ver como Jogador' : '🛠️ Ver como Administrador'}</button>`}
@@ -1139,10 +1145,32 @@ const ACT = {
     fazer(async () => { const r = await salvar('Jogos', Object.assign({}, base, f), 'Jogo salvo'); st.jogoId = r.linhas[0].id; st.jogoTab = 'lista'; render(); });
   },
   excluirJogo: (d) => {
-    if (!confirmar('Excluir este jogo e toda a lista dele?')) return;
+    const j = jogo(d.id), t = travaJogo(j);
+    if (t) return toast(`Não dá para excluir: o jogo já tem ${t}. Use Arquivar.`, true);
+    if (!confirmar('Excluir esta lista? Use só para lista criada por engano ou jogo cancelado.')) return;
     fechar();
-    fazer(async () => { await excluir('Inscricoes', inscritos(d.id).map(i => i.id)); await excluir('Jogos', d.id, 'Jogo excluído'); st.jogoId = null; render(); });
+    fazer(async () => { await api('excluir', { tabela: 'Jogos', ids: [d.id] }); st.d.Inscricoes = st.d.Inscricoes.filter(i => i.jogoId !== d.id);
+      st.d.Votos = (st.d.Votos || []).filter(v => v.jogoId !== d.id); st.d.Jogos = st.d.Jogos.filter(x => x.id !== d.id); st.jogoId = null; render(); toast('Lista excluída'); });
   },
+  arquivarJogo: d => {
+    const j = jogo(d.id); fechar();
+    fazer(async () => { await salvar('Jogos', Object.assign({}, j, { arquivado: 'S' }), `Jogo de ${fcurta(j.data)} arquivado 🗄️`); st.jogoId = null; render(); });
+  },
+  desarquivarJogo: d => {
+    const j = jogo(d.id); fechar();
+    fazer(async () => { await salvar('Jogos', Object.assign({}, j, { arquivado: '' }), `Jogo de ${fcurta(j.data)} voltou para a lista`); st.tab = 'jogo'; st.jogoId = j.id; render(); });
+  },
+  verArquivados: () => {
+    fechar();
+    const L = jogosOrd().filter(j => yes(j.arquivado)).reverse();
+    modal('🗄️ Jogos arquivados', L.length ? `<div class="small muted" style="margin-bottom:10px">Continuam contando nas tabelas, no caixa e nas pendências. Só saíram da tela do Jogo.</div>
+      <div class="list">${L.map(j => { const ins = inscritos(j.id), pend = ins.filter(i => !yes(i.pago)).length;
+        return `<div class="li"><div class="grow"><b>${DIAS[dt(j.data).getDay()].split('-')[0]} ${fdata(j.data)}</b>
+          <div class="tiny">${temResultado(j) ? `Vermelho ${j.golsVermelho} x ${j.golsAzul} Azul • ` : ''}${ins.length} na lista${pend ? ` • ${pend} sem pagar` : ''}</div></div>
+          <button class="btn sm ghost" data-act="abrirArquivado" data-id="${j.id}">Abrir</button><button class="btn sm" data-act="desarquivarJogo" data-id="${j.id}">Desarquivar</button></div>`; }).join('')}</div>`
+      : `<div class="card muted">Nenhum jogo arquivado. Para arquivar, abra o jogo, toque em <b>Editar</b> e depois em <b>Arquivar</b>.</div>`);
+  },
+  abrirArquivado: d => { fechar(); st.tab = 'jogo'; st.jogoId = d.id; st.jogoTab = inscritos(d.id).some(i => i.time) ? 'resultado' : 'lista'; render(); scrollTo(0, 0); },
   statusJogo: d => fazer(() => salvar('Jogos', Object.assign({}, jogo(st.jogoId), { status: d.s }), d.s === 'fechada' ? 'Lista fechada' : 'Lista reaberta')),
 
   sortear: () => { const j = jogo(st.jogoId); const s = sugestoes(j); if (!s.length) return toast('Lista vazia', true);
@@ -1421,7 +1449,10 @@ function formJogo(j) {
     <label class="f"><span>Goleiro R$</span><input class="in" name="valorGoleiro" inputmode="decimal" value="${esc(j.valorGoleiro)}"></label></div>
     <label class="f"><span>Quadra R$</span><input class="in" name="quadra" inputmode="decimal" value="${esc(j.quadra)}"></label>
     <label class="f"><span>Situação</span><select class="in" name="status">${[['aberta', 'Lista aberta'], ['fechada', 'Lista fechada'], ['encerrada', 'Encerrado']].map(([v, l]) => `<option value="${v}" ${j.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-    <div class="btns"><button type="button" class="btn pri grow" data-act="salvarJogo">${j.id ? 'Salvar' : 'Abrir lista'}</button>${j.id ? `<button type="button" class="btn danger" data-act="excluirJogo" data-id="${j.id}">Excluir</button>` : ''}</div></form>`);
+    <div class="btns"><button type="button" class="btn pri grow" data-act="salvarJogo">${j.id ? 'Salvar' : 'Abrir lista'}</button>
+      ${j.id ? (yes(j.arquivado) ? `<button type="button" class="btn" data-act="desarquivarJogo" data-id="${j.id}">Desarquivar</button>` : `<button type="button" class="btn" data-act="arquivarJogo" data-id="${j.id}">🗄️ Arquivar</button>`) : ''}</div>
+    ${j.id ? (travaJogo(j) ? `<div class="tiny" style="margin-top:12px">🔒 Este jogo não pode ser excluído (já tem ${travaJogo(j)}). Arquivar tira da tela e guarda tudo.</div>`
+      : `<button type="button" class="btn ghost full" style="margin-top:10px;color:var(--red)" data-act="excluirJogo" data-id="${j.id}">Excluir lista (só se foi criada por engano)</button>`) : ''}</form>`);
 }
 
 /* addInscOk usa a caixa "goleiro" */

@@ -6,7 +6,7 @@
 var TABELAS = {
   Jogadores: ['id','apelido','nome','posicao','nota','peso','login','papel','ativo','fotoVer','foto','senhaHash','senhaTemp','trocarSenha'],
   Historico: ['jogadorId','gols','craques','bolasMurchas','pontos','golsSofridos','jogosGoleiro'],
-  Jogos: ['id','data','hora','status','valorJogador','valorGoleiro','quadra','golsVermelho','golsAzul','votacao','craqueIds','murchaIds','arrecadadoManual','legado','obs'],
+  Jogos: ['id','data','hora','status','valorJogador','valorGoleiro','quadra','golsVermelho','golsAzul','votacao','craqueIds','murchaIds','arrecadadoManual','legado','obs','arquivado'],
   Inscricoes: ['id','jogoId','jogadorId','nomeAvulso','goleiro','ordem','time','gols','pago','valor'],
   Votos: ['id','jogoId','eleitorId','craqueId','murchaId'],
   Caixa: ['id','data','descricao','valor'],
@@ -115,6 +115,14 @@ function EfcServer(store) {
       return true;
     }
     return false;
+  }
+  function travaJogo(j) {
+    if (s(j.golsVermelho) !== '' || s(j.golsAzul) !== '') return 'placar lançado';
+    var ins = store.read('Inscricoes').filter(function (i) { return s(i.jogoId) === s(j.id); });
+    if (ins.some(function (i) { return s(i.pago) === 'S'; })) return 'pagamento marcado';
+    if (ins.some(function (i) { return Number(i.gols) > 0; })) return 'gols lançados';
+    if (store.read('Votos').some(function (v) { return s(v.jogoId) === s(j.id); })) return 'votos';
+    return '';
   }
   function podeExcluir(u, tab, antigo) {
     if (INTERNAS.indexOf(tab) >= 0) return false;
@@ -332,6 +340,13 @@ function EfcServer(store) {
         (req.ids || [req.id]).forEach(function (id) {
           var ant = find(tb, id); if (!ant) return;
           if (!podeExcluir(me, tb, ant)) erro('Você não tem permissão para excluir.');
+          if (tb === 'Jogos') { // trava: jogo com placar, gols, votos ou pagamento não pode ser apagado
+            var trava = travaJogo(ant);
+            if (trava) erro('Este jogo não pode ser excluído porque já tem ' + trava + '. Use "Arquivar": ele sai da tela e os dados ficam guardados.');
+            store.read('Inscricoes').filter(function (i) { return s(i.jogoId) === s(id); }).forEach(function (i) { store.remove('Inscricoes', i.id); });
+            store.read('Votos').filter(function (v) { return s(v.jogoId) === s(id); }).forEach(function (v) { store.remove('Votos', v.id); });
+          }
+          if (tb === 'Inscricoes' && !admin(me)) { /* regras do jogador já conferidas */ }
           store.remove(tb, id);
         });
         return { ok: true };

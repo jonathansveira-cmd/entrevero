@@ -14,7 +14,7 @@ var TABELAS = {
   Cobrancas: ['id','categoria','pessoa','item','valor','pago','recebedor','obs'],
   Patrocinios: ['id','ano','empresa','valor','status'],
   Eventos: ['id','nome','data','valor','status','obs'],
-  EventoParticipantes: ['id','eventoId','jogadorId','nomeAvulso','valor','pago'],
+  EventoParticipantes: ['id','eventoId','jogadorId','nomeAvulso','valor','pago','valorPago'],
   EventoGastos: ['id','eventoId','descricao','valor'],
   Midias: ['id','jogadorId','autorId','tipo','mime','arquivoId','legenda','data','jogoId'],
   Avisos: ['id','data','tipo','titulo','texto','autorId','para'],
@@ -111,7 +111,7 @@ function EfcServer(store) {
     if (tab === 'EventoParticipantes') {
       if (s(novo.jogadorId) !== s(u.id)) return false;
       var ev = find('Eventos', novo.eventoId); if (!ev || s(ev.status) !== 'aberto') return false;
-      if (antigo ? mudou(['pago', 'valor']) : (s(novo.pago) === 'S' || s(novo.valor) !== '')) return false;
+      if (antigo ? mudou(['pago', 'valor', 'valorPago']) : (s(novo.pago) === 'S' || s(novo.valor) !== '' || s(novo.valorPago) !== '')) return false;
       return true;
     }
     return false;

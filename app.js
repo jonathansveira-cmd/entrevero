@@ -7,7 +7,28 @@ const API = (window.EFC_API || '').trim();
 const DEMO = !API;
 const $ = (s, el = document) => el.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const num = v => { const n = parseFloat(String(v ?? '').replace(',', '.')); return isNaN(n) ? 0 : n; };
+const num = v => {
+  if (typeof v === 'number') return isNaN(v) ? 0 : v;
+  let t = String(v ?? '').replace(/R\$\s?/g, '').replace(/\s/g, '');
+  if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
+  const n = parseFloat(t); return isNaN(n) ? 0 : n;
+};
+const moeda = n => 'R$ ' + (n < 0 ? '-' : '') + Math.abs(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const vMoeda = v => blank(v) ? '' : moeda(num(v));
+// campo de dinheiro: digita só números e ele vai formando R$ 0,00
+const campoMoeda = (nome, valor, extra = '') => `<input class="in money" name="${nome}" inputmode="numeric" autocomplete="off" placeholder="R$ 0,00" value="${esc(vMoeda(valor))}" ${extra}>`;
+function formDados(f) {
+  const o = Object.fromEntries(new FormData(f));
+  f.querySelectorAll('input.money').forEach(i => { if (i.name in o) o[i.name] = blank(i.value) ? '' : num(i.value); });
+  return o;
+}
+document.addEventListener('focusin', e => { const el = e.target; if (el.classList && el.classList.contains('money')) setTimeout(() => { try { el.select(); } catch (x) { } }, 0); });
+document.addEventListener('input', e => {
+  const el = e.target; if (!el.classList || !el.classList.contains('money')) return;
+  const dig = el.value.replace(/\D/g, '').replace(/^0+/, '');
+  el.value = dig ? moeda(parseInt(dig, 10) / 100) : '';
+  try { el.setSelectionRange(el.value.length, el.value.length); } catch (x) { }
+});
 const yes = v => String(v) === 'S';
 const blank = v => v === null || v === undefined || String(v).trim() === '';
 const csv = v => String(v || '').split(',').map(x => x.trim()).filter(Boolean);
@@ -170,8 +191,11 @@ function pendencias() {
     inscritos(j.id).forEach(i => { if (!yes(i.pago)) out.push({ tipo: 'jogo', ref: j, i, nome: nomeI(i), jogadorId: i.jogadorId, valor: valorI(i, j) }); });
   });
   (D().Eventos || []).forEach(e => {
-    (D().EventoParticipantes || []).filter(p => p.eventoId === e.id && !yes(p.pago))
-      .forEach(p => out.push({ tipo: 'evento', ref: e, i: p, nome: nomeI(p), jogadorId: p.jogadorId, valor: blank(p.valor) ? num(e.valor) : num(p.valor) }));
+    const r = rateio(e);
+    (D().EventoParticipantes || []).filter(p => p.eventoId === e.id).forEach(p => {
+      const f = faltaEv(e, p, r); if (f <= 0.009) return;
+      out.push({ tipo: 'evento', ref: e, i: p, nome: nomeI(p), jogadorId: p.jogadorId, valor: f, complemento: yes(p.pago), rateio: r });
+    });
   });
   (D().Cobrancas || []).forEach(c => {
     const falta = num(c.valor) - num(c.pago);
@@ -186,6 +210,23 @@ function matchJog(nome) {
 }
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+
+/* eventos: valor de cada participante (gastos divididos ou valor fixo) */
+function rateio(e) {
+  const ps = (D().EventoParticipantes || []).filter(p => p.eventoId === e.id);
+  const gastos = (D().EventoGastos || []).filter(g => g.eventoId === e.id).reduce((a, g) => a + num(g.valor), 0);
+  if (gastos > 0 && ps.length) {
+    const fixos = ps.filter(p => !blank(p.valor)), resto = ps.length - fixos.length;
+    const sobra = Math.max(0, gastos - fixos.reduce((a, p) => a + num(p.valor), 0));
+    const por = resto ? Math.ceil(sobra / resto * 100) / 100 : 0;
+    return { auto: true, gastos, n: ps.length, resto, por };
+  }
+  return { auto: false, gastos, n: ps.length, resto: ps.length, por: num(e.valor) };
+}
+const devidoEv = (e, p, r) => !blank(p.valor) ? num(p.valor) : (r || rateio(e)).por;
+// quem pagou antes desta versão (sem valor gravado) pagou o valor fixo da época
+const pagoEvValor = (e, p, r) => !yes(p.pago) ? 0 : !blank(p.valorPago) ? num(p.valorPago) : !blank(p.valor) ? num(p.valor) : num(e.valor) > 0 ? num(e.valor) : devidoEv(e, p, r);
+const faltaEv = (e, p, r) => Math.max(0, Math.round((devidoEv(e, p, r) - pagoEvValor(e, p, r)) * 100) / 100);
 
 /* caixa */
 function caixa() {
@@ -351,7 +392,7 @@ function vInicio() {
   h += `<div class="sec"><h2>Meus números</h2></div><div class="grid2">
     <div class="stat"><div class="k">Pontuação</div><div class="v">${s.pontos || 0}${pos ? `<span class="tiny"> • ${pos.pos}º</span>` : ''}</div></div>
     <div class="stat"><div class="k">Gols</div><div class="v">${s.gols || 0}</div></div>
-    <div class="stat"><div class="k">Craque</div><div class="v">${s.craques || 0}</div></div>
+    <div class="stat"><div class="k">Bola cheia</div><div class="v">${s.craques || 0}</div></div>
     <div class="stat"><div class="k">Bola murcha</div><div class="v">${s.murchas || 0}</div></div></div>
     <div class="btns" style="margin-top:16px"><button class="btn ghost grow" data-act="tab" data-t="elenco">👥 Elenco</button><button class="btn ghost grow" data-act="tab" data-t="galeria">📸 Galeria</button></div>`;
   return h;
@@ -367,7 +408,7 @@ function cardPendencias(me) {
     ${grupos.map(([k, rot]) => { const ps = minhas.filter(p => p.tipo === k); if (!ps.length) return '';
       return `<div style="margin-top:12px"><div class="row small" style="font-weight:700;margin-bottom:2px"><span class="grow">${rot}</span><span class="money muted">${brl(ps.reduce((a, p) => a + p.valor, 0))}</span></div>
         ${ps.map(p => k === 'jogo' ? linha(`Jogo de ${fdata(p.ref.data)}`, p.valor, yes(p.i.goleiro) ? 'goleiro' : '')
-          : k === 'evento' ? linha(esc(p.ref.nome), p.valor, fdata(p.ref.data))
+          : k === 'evento' ? linha(esc(p.ref.nome), p.valor, (p.complemento ? 'complemento • ' : '') + fdata(p.ref.data) + (p.rateio && p.rateio.auto && blank(p.i.valor) ? ` • gastos ${brl(p.rateio.gastos)} ÷ ${p.rateio.n}` : ''))
           : linha(esc(p.ref.item), p.valor, num(p.ref.pago) > 0 ? `já pagou ${brl(p.ref.pago)} de ${brl(p.ref.valor)}` : esc(p.ref.categoria))).join('')}</div>`; }).join('')}
     <div class="tiny" style="margin-top:12px">Pix: <b style="user-select:all">${esc(cfg('pix'))}</b> • depois de pagar, um administrador marca como pago.</div></div>`;
 }
@@ -650,7 +691,7 @@ function textoPendencias() {
   });
   (D().Eventos || []).forEach(e => {
     const ps = P.filter(p => p.tipo === 'evento' && p.ref.id === e.id); if (!ps.length) return;
-    blocos.push(`${e.nome}: ${emojiEv(e)}\n${ps.map((p, k) => `${k + 1}. ${p.nome} ❌`).join('\n')}\n*R$${brl0(e.valor)}*`);
+    blocos.push(`${e.nome}: ${emojiEv(e)}\n${ps.map((p, k) => `${k + 1}. ${p.nome}${p.complemento ? ` (falta R$${brl0(p.valor)})` : ''} ❌`).join('\n')}\n*R$${brl0(rateio(e).por)}*`);
   });
   return blocos.join(SEP());
 }
@@ -781,7 +822,7 @@ function vEventos() {
   E.forEach(e => {
     const ps = (D().EventoParticipantes || []).filter(p => p.eventoId === e.id), pagos = ps.filter(p => yes(p.pago)).length;
     h += `<div class="card click" data-act="abrirEvento" data-id="${e.id}"><div class="row"><div class="grow"><div class="kick">${fdata(e.data)}</div>
-      <h3 style="font-size:19px;margin-top:2px">${esc(e.nome)}</h3><div class="small muted">${brl(e.valor)} por pessoa • ${ps.length} confirmados • ${pagos} pagos</div></div>
+      <h3 style="font-size:19px;margin-top:2px">${esc(e.nome)}</h3><div class="small muted">${brl(rateio(e).por)} por pessoa${rateio(e).auto ? ' (gastos divididos)' : ''} • ${ps.length} confirmados • ${pagos} pagos</div></div>
       <span class="chip ${e.status === 'aberto' ? 'or' : ''}">${e.status === 'aberto' ? 'aberto' : 'encerrado'}</span></div></div>`;
   });
   return h;
@@ -789,28 +830,29 @@ function vEventos() {
 function eventoDet(e) {
   const ps = (D().EventoParticipantes || []).filter(p => p.eventoId === e.id);
   const gs = (D().EventoGastos || []).filter(g => g.eventoId === e.id);
-  const vp = p => blank(p.valor) ? num(e.valor) : num(p.valor);
-  const arrec = ps.filter(p => yes(p.pago)).reduce((a, p) => a + vp(p), 0), prev = ps.reduce((a, p) => a + vp(p), 0);
-  const gast = gs.reduce((a, g) => a + num(g.valor), 0);
+  const r = rateio(e);
+  const arrec = ps.reduce((a, p) => a + pagoEvValor(e, p, r), 0), prev = ps.reduce((a, p) => a + devidoEv(e, p, r), 0);
+  const gast = r.gastos;
   const eu = ps.find(p => p.jogadorId === st.user.id);
   let h = `<button class="btn sm ghost" data-act="voltarEv" style="margin-bottom:12px">‹ Eventos</button>
-    <div class="card hero"><div class="kick">${fdata(e.data)}</div><div class="big">${esc(e.nome)}</div><div class="muted small">${brl(e.valor)} por pessoa${e.obs ? ' • ' + esc(e.obs) : ''}</div>
+    <div class="card hero"><div class="kick">${fdata(e.data)}</div><div class="big">${esc(e.nome)}</div><div class="small" style="margin-top:4px"><b class="money" style="font-size:17px;color:var(--or2)">${brl(r.por)}</b> por pessoa</div>
+    <div class="tiny">${r.auto ? `Gastos ${brl(r.gastos)} divididos entre ${r.resto} ${r.resto === 1 ? 'pessoa' : 'pessoas'}${r.resto < r.n ? ` (${r.n - r.resto} com valor próprio)` : ''} • calculado automaticamente` : 'Valor fixo • lance os gastos para o app dividir automaticamente'}${e.obs ? ' • ' + esc(e.obs) : ''}</div>
     <div class="grid2" style="margin-top:14px"><div class="stat"><div class="k">Arrecadado</div><div class="v money" style="font-size:19px">${brl(arrec)}</div><div class="tiny">de ${brl(prev)}</div></div>
     <div class="stat"><div class="k">Saldo</div><div class="v money ${arrec - gast >= 0 ? 'pos' : 'neg'}" style="font-size:19px">${brl(arrec - gast)}</div><div class="tiny">gastos ${brl(gast)}</div></div></div></div>`;
   if (e.status === 'aberto') h += eu ? (yes(eu.pago) ? '' : `<button class="btn danger full" style="margin-bottom:14px" data-act="sairEv" data-id="${eu.id}">Não vou mais</button>`)
     : `<button class="btn pri full" style="margin-bottom:14px" data-act="entrarEv">Eu vou!</button>`;
   h += `<div class="sec"><h3>Participantes (${ps.length})</h3>${admin() ? `<button class="btn sm" data-act="addPart">+ Adicionar</button>` : ''}</div>
-    <div class="list">${ps.map((p, k) => `<div class="li"><span class="n">${k + 1}</span>${av(p.jogadorId, 'sm', nomeI(p))}<div class="grow ellip"><b>${esc(nomeI(p))}</b>${!blank(p.valor) ? `<div class="tiny">${brl(p.valor)}</div>` : ''}</div>
-      ${admin() ? `<button class="paybtn" data-act="pagoEv" data-id="${p.id}">${yes(p.pago) ? '✅' : '❌'}</button><button class="x" style="width:28px;height:28px;font-size:14px" data-act="tirarEv" data-id="${p.id}">×</button>`
-      : `<span class="chip ${yes(p.pago) ? 'ok' : 'no'}">${yes(p.pago) ? 'pago' : 'pendente'}</span>`}</div>`).join('') || '<div class="li empty">Ninguém ainda</div>'}</div>
-    <div class="sec"><h3>Gastos</h3>${admin() ? `<button class="btn sm" data-act="editGasto">+ Gasto</button>` : ''}</div>
+    <div class="list">${ps.map((p, k) => `<div class="li"><span class="n">${k + 1}</span>${av(p.jogadorId, 'sm', nomeI(p))}<div class="grow" style="min-width:0"><b>${esc(nomeI(p))}</b><div class="tiny">${brl(devidoEv(e, p, r))}${!blank(p.valor) ? ' (valor próprio)' : ''}${yes(p.pago) && faltaEv(e, p, r) > 0 ? ` • pagou ${brl(pagoEvValor(e, p, r))}, falta ${brl(faltaEv(e, p, r))}` : ''}</div></div>
+      ${admin() ? `<button class="paybtn" data-act="pagoEv" data-id="${p.id}" title="pagamento">${!yes(p.pago) ? '❌' : faltaEv(e, p, r) > 0 ? '⚠️' : '✅'}</button><button class="x" style="width:28px;height:28px;font-size:14px" data-act="tirarEv" data-id="${p.id}">×</button>`
+      : `<span class="chip ${!yes(p.pago) ? 'no' : faltaEv(e, p, r) > 0 ? 'or' : 'ok'}">${!yes(p.pago) ? 'pendente' : faltaEv(e, p, r) > 0 ? 'falta ' + brl(faltaEv(e, p, r)) : 'pago'}</span>`}</div>`).join('') || '<div class="li empty">Ninguém ainda</div>'}</div>
+    <div class="sec"><h3>Gastos <span class="tiny money">${brl(gast)}</span></h3>${admin() ? `<button class="btn sm" data-act="editGasto">+ Gasto</button>` : ''}</div>
     <div class="list">${gs.map(g => `<div class="li ${admin() ? 'click' : ''}" ${admin() ? `data-act="editGasto" data-id="${g.id}"` : ''}><div class="grow">${esc(g.descricao)}</div><b class="money">${brl(g.valor)}</b></div>`).join('') || '<div class="li empty">Nenhum gasto lançado</div>'}</div>
     <div class="btns"><button class="btn pri grow" data-act="textoEv">📲 Texto do evento</button>${admin() ? `<button class="btn ghost" data-act="editEvento" data-id="${e.id}">Editar</button>` : ''}</div>`;
   return h;
 }
 function textoEvento(e) {
   const ps = (D().EventoParticipantes || []).filter(p => p.eventoId === e.id);
-  return preencher('evento', { NOME: e.nome, EMOJI: emojiEv(e), DATA: fdata(e.data), LISTA: ps.map((p, k) => `${k + 1}. ${nomeI(p)} ${yes(p.pago) ? '✅' : '❌'}`).join('\n'), VALOR: brl0(e.valor), PIX: cfg('pix') });
+  return preencher('evento', { NOME: e.nome, EMOJI: emojiEv(e), DATA: fdata(e.data), LISTA: ps.map((p, k) => `${k + 1}. ${nomeI(p)}${!blank(p.valor) ? ` (R$${brl0(p.valor)})` : ''} ${!yes(p.pago) ? '❌' : faltaEv(e, p) > 0 ? `⚠️ falta R$${brl0(faltaEv(e, p))}` : '✅'}`).join('\n'), VALOR: brl0(rateio(e).por), PIX: cfg('pix') });
 }
 
 /* ================= ELENCO ================= */
@@ -975,7 +1017,7 @@ const CAMPOS = [['pix', 'Chave Pix'], ['valorJogador', 'Valor jogador (R$)'], ['
 function vConfig() {
   if (!admin()) { st.tab = 'inicio'; return vInicio(); }
   return `<div class="sec" style="margin-top:0"><h2>⚙️ Configurações</h2></div>
-    <form class="card" id="cfgForm"><div class="grid2">${CAMPOS.map(([k, l]) => `<label class="f" ${k === 'pix' ? 'style="grid-column:1/-1"' : ''}><span>${l}</span><input class="in" name="${k}" value="${esc(cfg(k))}"></label>`).join('')}</div>
+    <form class="card" id="cfgForm"><div class="grid2">${CAMPOS.map(([k, l]) => `<label class="f" ${k === 'pix' ? 'style="grid-column:1/-1"' : ''}><span>${l}</span>${['valorJogador', 'valorGoleiro', 'quadra'].includes(k) ? campoMoeda(k, cfg(k)) : `<input class="in" name="${k}" value="${esc(cfg(k))}">`}</label>`).join('')}</div>
     <button type="button" class="btn pri full" data-act="salvarCfg">Salvar configurações</button></form>
     <div class="sec"><h2>🔔 Notificações</h2></div>
     <form class="card" id="notifForm"><div class="small muted" style="margin-bottom:6px">Quais avisos o time recebe no celular:</div>
@@ -1139,7 +1181,7 @@ const ACT = {
   },
   editJogo: () => formJogo(jogo(st.jogoId)),
   salvarJogo: (d, el) => {
-    const f = Object.fromEntries(new FormData(el.closest('form')));
+    const f = formDados(el.closest('form'));
     const base = f.id ? jogo(f.id) : { golsVermelho: '', golsAzul: '', votacao: '', craqueIds: '', murchaIds: '', arrecadadoManual: '', legado: '', obs: '' };
     fechar();
     fazer(async () => { const r = await salvar('Jogos', Object.assign({}, base, f), 'Jogo salvo'); st.jogoId = r.linhas[0].id; st.jogoTab = 'lista'; render(); });
@@ -1236,21 +1278,22 @@ const ACT = {
     fazer(() => salvar('Cobrancas', Object.assign({}, c, { pago: c.valor }), 'Marcado como pago'));
   },
   editSaldo: () => modal('Saldo inicial', `<form><label class="f"><span>Data</span><input class="in" type="date" name="d" value="${cfg('saldoInicialData')}"></label>
-      <label class="f"><span>Saldo nessa data (R$)</span><input class="in" name="v" inputmode="decimal" value="${cfg('saldoInicial')}"></label>
+      <label class="f"><span>Saldo nessa data (R$)</span>${campoMoeda('v', cfg('saldoInicial'))}</label>
       <button type="button" class="btn pri full" data-act="editSaldoOk">Salvar</button></form>`),
-  editSaldoOk: (d, el) => { const f = Object.fromEntries(new FormData(el.closest('form'))); fechar();
+  editSaldoOk: (d, el) => { const f = formDados(el.closest('form')); fechar();
     fazer(() => salvar('Config', [{ id: 'saldoInicialData', valor: f.d }, { id: 'saldoInicial', valor: num(f.v) }], 'Saldo atualizado')); },
   editArrec: d => { const j = jogo(d.id);
-    modal('Jogo ' + fcurta(j.data), `<form><label class="f"><span>Arrecadado (deixe vazio para somar os ✅)</span><input class="in" name="a" inputmode="decimal" value="${esc(j.arrecadadoManual)}"></label>
-      <label class="f"><span>Quadra (R$)</span><input class="in" name="q" inputmode="decimal" value="${esc(j.quadra)}"></label>
+    modal('Jogo ' + fcurta(j.data), `<form><label class="f"><span>Arrecadado (deixe vazio para somar os ✅)</span>${campoMoeda('a', j.arrecadadoManual)}</label>
+      <label class="f"><span>Quadra (R$)</span>${campoMoeda('q', j.quadra)}</label>
       <button type="button" class="btn pri full" data-act="editArrecOk" data-id="${j.id}">Salvar</button></form>`); },
-  editArrecOk: (d, el) => { const f = Object.fromEntries(new FormData(el.closest('form'))), j = jogo(d.id); fechar();
-    fazer(() => salvar('Jogos', Object.assign({}, j, { arrecadadoManual: f.a.trim() === '' ? '' : num(f.a), quadra: num(f.q), obs: f.a.trim() !== '' && yes(j.legado) ? '' : j.obs }), 'Salvo')); },
+  editArrecOk: (d, el) => { const f = formDados(el.closest('form')), j = jogo(d.id); fechar();
+    fazer(() => salvar('Jogos', Object.assign({}, j, { arrecadadoManual: blank(f.a) ? '' : num(f.a), quadra: num(f.q), obs: !blank(f.a) && yes(j.legado) ? '' : j.obs }), 'Salvo')); },
   editLanc: d => { const c = d.id ? D().Caixa.find(x => x.id === d.id) : { data: hoje(), descricao: '', valor: '' };
     modal(d.id ? 'Lançamento' : 'Novo lançamento', `<form><input type="hidden" name="id" value="${esc(c.id || '')}">
       <label class="f"><span>Descrição</span><input class="in" name="descricao" value="${esc(c.descricao)}" placeholder="Ex.: Troféu, bolas, coletes"></label>
       <label class="f"><span>Data</span><input class="in" type="date" name="data" value="${esc(c.data)}"></label>
-      <label class="f"><span>Valor (use − para saída)</span><input class="in" name="valor" inputmode="decimal" value="${esc(c.valor)}" placeholder="-40"></label>
+      <div class="grid2"><label class="f"><span>Tipo</span><select class="in" name="tipo"><option value="saida" ${num(c.valor) <= 0 ? 'selected' : ''}>Saída (gasto)</option><option value="entrada" ${num(c.valor) > 0 ? 'selected' : ''}>Entrada</option></select></label>
+      <label class="f"><span>Valor</span>${campoMoeda('valor', blank(c.valor) ? '' : Math.abs(num(c.valor)))}</label></div>
       <div class="btns"><button type="button" class="btn pri grow" data-act="salvarGen" data-tab="Caixa">Salvar</button>${d.id ? `<button type="button" class="btn danger" data-act="excluirGen" data-tab="Caixa" data-id="${d.id}">Excluir</button>` : ''}</div></form>`); },
   editCob: d => { const c = d.id ? D().Cobrancas.find(x => x.id === d.id) : { categoria: 'Uniforme 2026', pessoa: '', item: '', valor: '', pago: 0, recebedor: '', obs: '' };
     const cats = [...new Set((D().Cobrancas || []).map(x => x.categoria))];
@@ -1258,21 +1301,22 @@ const ACT = {
       <label class="f"><span>Categoria</span><input class="in" name="categoria" list="cats" value="${esc(c.categoria)}"><datalist id="cats">${cats.map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
       <label class="f"><span>Pessoa</span><input class="in" name="pessoa" value="${esc(c.pessoa)}"></label>
       <label class="f"><span>Item</span><input class="in" name="item" value="${esc(c.item)}" placeholder="Camisa, casaco, bermuda..."></label>
-      <div class="grid2"><label class="f"><span>Valor</span><input class="in" name="valor" inputmode="decimal" value="${esc(c.valor)}"></label>
-      <label class="f"><span>Já pago</span><input class="in" name="pago" inputmode="decimal" value="${esc(c.pago)}"></label></div>
+      <div class="grid2"><label class="f"><span>Valor</span>${campoMoeda('valor', c.valor)}</label>
+      <label class="f"><span>Já pago</span>${campoMoeda('pago', c.pago)}</label></div>
       <label class="f"><span>Quem recebeu</span><input class="in" name="recebedor" value="${esc(c.recebedor)}"></label>
       <label class="f"><span>Observação</span><input class="in" name="obs" value="${esc(c.obs)}"></label>
       <div class="btns"><button type="button" class="btn pri grow" data-act="salvarGen" data-tab="Cobrancas">Salvar</button>${d.id ? `<button type="button" class="btn danger" data-act="excluirGen" data-tab="Cobrancas" data-id="${d.id}">Excluir</button>` : ''}</div></form>`); },
   editPatro: d => { const p = d.id ? D().Patrocinios.find(x => x.id === d.id) : { ano: new Date().getFullYear(), empresa: '', valor: '', status: 'negociacao' };
     modal(d.id ? 'Patrocinador' : 'Novo patrocinador', `<form><input type="hidden" name="id" value="${esc(p.id || '')}">
       <label class="f"><span>Empresa</span><input class="in" name="empresa" value="${esc(p.empresa)}"></label>
-      <div class="grid2"><label class="f"><span>Valor</span><input class="in" name="valor" inputmode="decimal" value="${esc(p.valor)}"></label>
+      <div class="grid2"><label class="f"><span>Valor</span>${campoMoeda('valor', p.valor)}</label>
       <label class="f"><span>Ano</span><input class="in" name="ano" inputmode="numeric" value="${esc(p.ano)}"></label></div>
       <label class="f"><span>Situação</span><select class="in" name="status">${[['pago', 'Pago'], ['negociacao', 'Em negociação'], ['interesse', 'Interesse']].map(([v, l]) => `<option value="${v}" ${p.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <div class="btns"><button type="button" class="btn pri grow" data-act="salvarGen" data-tab="Patrocinios">Salvar</button>${d.id ? `<button type="button" class="btn danger" data-act="excluirGen" data-tab="Patrocinios" data-id="${d.id}">Excluir</button>` : ''}</div></form>`); },
   salvarGen: (d, el) => {
-    const f = Object.fromEntries(new FormData(el.closest('form'))); if (!f.id) delete f.id;
+    const f = formDados(el.closest('form')); if (!f.id) delete f.id;
     ['valor', 'pago'].forEach(k => { if (k in f) f[k] = num(f[k]); });
+    if ('tipo' in f) { f.valor = f.tipo === 'saida' ? -Math.abs(f.valor) : Math.abs(f.valor); delete f.tipo; }
     const ant = f.id ? (D()[d.tab] || []).find(x => x.id === f.id) : {};
     fechar(); fazer(() => salvar(d.tab, Object.assign({}, ant, f), 'Salvo'));
   },
@@ -1285,11 +1329,12 @@ const ACT = {
     modal(d.id ? 'Editar evento' : 'Novo evento', `<form><input type="hidden" name="id" value="${esc(e.id || '')}">
       <label class="f"><span>Nome</span><input class="in" name="nome" value="${esc(e.nome)}" placeholder="Churrasco, confraternização..."></label>
       <div class="grid2"><label class="f"><span>Data</span><input class="in" type="date" name="data" value="${esc(e.data)}"></label>
-      <label class="f"><span>Valor por pessoa</span><input class="in" name="valor" inputmode="decimal" value="${esc(e.valor)}"></label></div>
+      <label class="f"><span>Valor fixo por pessoa</span>${campoMoeda('valor', e.valor)}</label></div>
+      <div class="tiny" style="margin:-4px 0 12px">Se você lançar gastos, o app divide o total entre os participantes e esse valor fixo deixa de valer.</div>
       <label class="f"><span>Observação</span><input class="in" name="obs" value="${esc(e.obs)}"></label>
       <label class="f"><span>Situação</span><select class="in" name="status"><option value="aberto" ${e.status === 'aberto' ? 'selected' : ''}>Aberto</option><option value="encerrado" ${e.status !== 'aberto' ? 'selected' : ''}>Encerrado</option></select></label>
       <div class="btns"><button type="button" class="btn pri grow" data-act="salvarEv">Salvar</button>${d.id ? `<button type="button" class="btn danger" data-act="excluirEv" data-id="${d.id}">Excluir</button>` : ''}</div></form>`); },
-  salvarEv: (d, el) => { const f = Object.fromEntries(new FormData(el.closest('form'))); if (!f.id) delete f.id; f.valor = num(f.valor); fechar();
+  salvarEv: (d, el) => { const f = formDados(el.closest('form')); if (!f.id) delete f.id; f.valor = num(f.valor); fechar();
     fazer(async () => { const r = await salvar('Eventos', f, 'Evento salvo'); st.eventoId = r.linhas[0].id; render(); }); },
   excluirEv: d => { if (!confirmar('Excluir o evento com participantes e gastos?')) return; fechar();
     fazer(async () => {
@@ -1300,22 +1345,27 @@ const ACT = {
   entrarEv: () => fazer(() => salvar('EventoParticipantes', { eventoId: st.eventoId, jogadorId: st.user.id, nomeAvulso: '', valor: '', pago: 'N' }, 'Confirmado! 🎉')),
   sairEv: d => { if (confirmar('Desmarcar presença?')) fazer(() => excluir('EventoParticipantes', d.id, 'Presença removida')); },
   tirarEv: d => { if (confirmar('Remover participante?')) fazer(() => excluir('EventoParticipantes', d.id, 'Removido')); },
-  pagoEv: d => fazer(() => { const p = D().EventoParticipantes.find(x => x.id === d.id); return salvar('EventoParticipantes', Object.assign({}, p, { pago: yes(p.pago) ? 'N' : 'S' })); }),
+  pagoEv: d => fazer(() => {
+    const p = D().EventoParticipantes.find(x => x.id === d.id), e = D().Eventos.find(x => x.id === p.eventoId), dev = devidoEv(e, p);
+    if (!yes(p.pago)) return salvar('EventoParticipantes', Object.assign({}, p, { pago: 'S', valorPago: dev }), `${nomeI(p)} pagou ${brl(dev)}`);
+    if (faltaEv(e, p) > 0) return salvar('EventoParticipantes', Object.assign({}, p, { valorPago: dev }), `Complemento de ${nomeI(p)} recebido`);
+    return salvar('EventoParticipantes', Object.assign({}, p, { pago: 'N', valorPago: '' }), 'Pagamento desmarcado');
+  }),
   addPart: () => {
     const ja = D().EventoParticipantes.filter(p => p.eventoId === st.eventoId).map(p => p.jogadorId);
     const ops = D().Jogadores.filter(x => yes(x.ativo) && !ja.includes(x.id)).sort((a, b) => a.apelido.localeCompare(b.apelido));
     modal('Adicionar participante', `<form><label class="f"><span>Jogador</span><select class="in" name="jogadorId"><option value="">— convidado —</option>${ops.map(o => `<option value="${o.id}">${esc(o.apelido)}</option>`).join('')}</select></label>
       <label class="f"><span>Nome do convidado</span><input class="in" name="nomeAvulso"></label>
-      <label class="f"><span>Valor diferente (opcional)</span><input class="in" name="valor" inputmode="decimal"></label>
+      <label class="f"><span>Valor diferente (opcional)</span>${campoMoeda('valor', '')}</label>
       <button type="button" class="btn pri full" data-act="addPartOk">Adicionar</button></form>`);
   },
-  addPartOk: (d, el) => { const f = Object.fromEntries(new FormData(el.closest('form'))); if (!f.jogadorId && !f.nomeAvulso.trim()) return toast('Escolha ou digite um nome', true);
-    if (f.jogadorId) f.nomeAvulso = ''; f.valor = f.valor.trim() === '' ? '' : num(f.valor); fechar();
+  addPartOk: (d, el) => { const f = formDados(el.closest('form')); if (!f.jogadorId && !f.nomeAvulso.trim()) return toast('Escolha ou digite um nome', true);
+    if (f.jogadorId) f.nomeAvulso = ''; f.valor = blank(f.valor) ? '' : num(f.valor); fechar();
     fazer(() => salvar('EventoParticipantes', Object.assign(f, { eventoId: st.eventoId, pago: 'N' }), 'Adicionado')); },
   editGasto: d => { const g = d.id ? D().EventoGastos.find(x => x.id === d.id) : { descricao: '', valor: '' };
     modal('Gasto', `<form><input type="hidden" name="id" value="${esc(g.id || '')}"><input type="hidden" name="eventoId" value="${st.eventoId}">
       <label class="f"><span>Descrição</span><input class="in" name="descricao" value="${esc(g.descricao)}" placeholder="Carne, bebida, carvão..."></label>
-      <label class="f"><span>Valor</span><input class="in" name="valor" inputmode="decimal" value="${esc(g.valor)}"></label>
+      <label class="f"><span>Valor</span>${campoMoeda('valor', g.valor)}</label>
       <div class="btns"><button type="button" class="btn pri grow" data-act="salvarGen" data-tab="EventoGastos">Salvar</button>${d.id ? `<button type="button" class="btn danger" data-act="excluirGen" data-tab="EventoGastos" data-id="${d.id}">Excluir</button>` : ''}</div></form>`); },
 
   verJog: d => { fechar(); st.voltar = st.tab === 'jogador' ? st.voltar : st.tab; st.jogadorId = d.id; st.tab = 'jogador'; render(); scrollTo(0, 0); },
@@ -1346,7 +1396,7 @@ const ACT = {
       <button type="button" class="btn pri full" data-act="salvarJog">Salvar</button></form>`);
   },
   salvarJog: (d, el) => {
-    const f = Object.fromEntries(new FormData(el.closest('form'))); if (!f.apelido.trim()) return toast('Informe o apelido', true);
+    const f = formDados(el.closest('form')); if (!f.apelido.trim()) return toast('Informe o apelido', true);
     if (!f.id) delete f.id; f.nota = num(f.nota); f.peso = num(f.peso);
     const ant = f.id ? J(f.id) : {}; fechar();
     fazer(async () => {
@@ -1402,8 +1452,8 @@ const ACT = {
   pdfShare: (d, el) => { const m = el.closest('.modal'), f = d.k === 'png' ? m._pngs : [m._arq];
     navigator.share({ files: f, title: 'Tabelas Entrevero' }).catch(e => { if (e && e.name !== 'AbortError') toast('Não deu para compartilhar aqui. Segure o dedo na imagem.', true); }); },
   salvarCfg: (d, el) => {
-    const f = Object.fromEntries(new FormData(el.closest('form')));
-    fazer(() => salvar('Config', Object.entries(f).map(([id, valor]) => ({ id, valor: valor.trim() })), 'Configurações salvas'));
+    const f = formDados(el.closest('form'));
+    fazer(() => salvar('Config', Object.entries(f).map(([id, valor]) => ({ id, valor: String(valor).trim() })), 'Configurações salvas'));
   },
   editModelo: d => {
     const m = MODELOS[d.id];
@@ -1445,9 +1495,9 @@ function formJogo(j) {
   modal(j.id ? 'Editar jogo' : 'Nova lista', `<form><input type="hidden" name="id" value="${esc(j.id || '')}">
     <div class="grid2"><label class="f"><span>Data</span><input class="in" type="date" name="data" value="${esc(j.data)}"></label>
     <label class="f"><span>Hora</span><input class="in" name="hora" value="${esc(j.hora)}"></label></div>
-    <div class="grid2"><label class="f"><span>Jogador R$</span><input class="in" name="valorJogador" inputmode="decimal" value="${esc(j.valorJogador)}"></label>
-    <label class="f"><span>Goleiro R$</span><input class="in" name="valorGoleiro" inputmode="decimal" value="${esc(j.valorGoleiro)}"></label></div>
-    <label class="f"><span>Quadra R$</span><input class="in" name="quadra" inputmode="decimal" value="${esc(j.quadra)}"></label>
+    <div class="grid2"><label class="f"><span>Jogador R$</span>${campoMoeda('valorJogador', j.valorJogador)}</label>
+    <label class="f"><span>Goleiro R$</span>${campoMoeda('valorGoleiro', j.valorGoleiro)}</label></div>
+    <label class="f"><span>Quadra R$</span>${campoMoeda('quadra', j.quadra)}</label>
     <label class="f"><span>Situação</span><select class="in" name="status">${[['aberta', 'Lista aberta'], ['fechada', 'Lista fechada'], ['encerrada', 'Encerrado']].map(([v, l]) => `<option value="${v}" ${j.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <div class="btns"><button type="button" class="btn pri grow" data-act="salvarJogo">${j.id ? 'Salvar' : 'Abrir lista'}</button>
       ${j.id ? (yes(j.arquivado) ? `<button type="button" class="btn" data-act="desarquivarJogo" data-id="${j.id}">Desarquivar</button>` : `<button type="button" class="btn" data-act="arquivarJogo" data-id="${j.id}">🗄️ Arquivar</button>`) : ''}</div>
